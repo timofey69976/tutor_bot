@@ -3,7 +3,7 @@
 Telegram бот для управления расписанием занятий репетитора
 Адаптирован для работы на Render с HTTP сервером
 С МАКСИМАЛЬНОЙ ЗАЩИТОЙ ОТ КОНФЛИКТОВ И СИСТЕМОЙ ПОДТВЕРЖДЕНИЯ
-С KEEP-ALIVE ДЛЯ ПРЕДОТВРАЩЕНИЯ ГИБЕРНАЦИИ
+БЕЗ ВСТРОЕННОГО KEEP-ALIVE (используй внешний крон-джоб)
 """
 
 import os
@@ -14,7 +14,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional, Dict, List, Tuple
 
-from aiohttp import web, ClientSession
+from aiohttp import web
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -28,7 +28,6 @@ from aiogram.filters import Command
 
 PORT = int(os.getenv('PORT', 10000))
 TOKEN = os.getenv('TOKEN')
-RENDER_URL = os.getenv('RENDER_URL', '')  # https://your-app.onrender.com
 
 if not TOKEN:
     TOKEN = '7954650918:AAFZlRTRxZEUXNq_IYACCn60WIq8y2NBSdI'
@@ -1016,31 +1015,6 @@ async def cleanup_task(bot: Bot):
             print(f"Cleanup task error: {e}")
             await asyncio.sleep(300)
 
-async def keep_alive_task():
-    """Периодический keep-alive запрос к своему серверу"""
-    if not RENDER_URL:
-        print("⚠️  RENDER_URL не установлен. Keep-alive отключен.")
-        return
-    
-    await asyncio.sleep(30)  # Начинаем после инициализации
-    
-    while True:
-        try:
-            await asyncio.sleep(840)  # 14 минут (меньше лимита 15 мин)
-            
-            async with ClientSession() as session:
-                try:
-                    async with session.get(f"{RENDER_URL}/health", timeout=5) as resp:
-                        if resp.status == 200:
-                            print(f"✅ Keep-alive ping успешен [{datetime.now().strftime('%H:%M:%S')}]")
-                        else:
-                            print(f"⚠️  Keep-alive ответ: {resp.status}")
-                except Exception as e:
-                    print(f"⚠️  Keep-alive ошибка: {e}")
-        except Exception as e:
-            print(f"❌ Keep-alive task error: {e}")
-            await asyncio.sleep(60)
-
 # ============================================================================
 # HTTP СЕРВЕР
 # ============================================================================
@@ -1130,7 +1104,6 @@ async def start_bot():
             asyncio.create_task(send_reminders(bot))
             asyncio.create_task(send_daily_schedule(bot))
             asyncio.create_task(cleanup_task(bot))
-            asyncio.create_task(keep_alive_task())
             
             await dp.start_polling(bot, skip_updates=True, handle_signals=False)
             
@@ -1167,7 +1140,7 @@ async def main():
     print("=" * 70)
     print(f"Port: {PORT}")
     print(f"Token: {'OK' if TOKEN else 'NOT SET'}")
-    print(f"Render URL: {RENDER_URL if RENDER_URL else 'NOT SET (keep-alive disabled)'}")
+    print("Keep-alive: Disabled (use external cron job)")
     print("=" * 70 + "\n")
     sys.stdout.flush()
     
@@ -1217,4 +1190,3 @@ if __name__ == "__main__":
         print(f"ERROR: Main thread error: {e}")
         import traceback
         traceback.print_exc()
-
