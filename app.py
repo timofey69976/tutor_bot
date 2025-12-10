@@ -1,10 +1,11 @@
 """
-Telegram bot для Render - полностью независимый (без импортов из других файлов)
+Telegram bot для Render - HTTP сервер + Бот в отдельных потоках
 """
 
 import os
 import asyncio
 import sys
+import threading
 from aiohttp import web
 from aiogram import Bot, Dispatcher, types
 from aiogram.fsm.storage.memory import MemoryStorage
@@ -26,6 +27,8 @@ if not TOKEN:
     TOKEN = '7954650918:AAFZlRTRxZEUXNq_IYACCn60WIq8y2NBSdI'
     print("⚠️  Используется default TOKEN\n")
 
+sys.stdout.flush()
+
 # ============================================================================
 # HTTP HANDLERS ДЛЯ RENDER
 # ============================================================================
@@ -39,17 +42,11 @@ async def root_handler(request):
     return web.Response(text="🤖 Telegram бот работает!", status=200)
 
 # ============================================================================
-# ГЛАВНАЯ ФУНКЦИЯ
+# HTTP СЕРВЕР (главный async loop)
 # ============================================================================
 
-async def start_app():
-    """Запускаем HTTP сервер и Telegram бота"""
-    
-    print("\n" + "=" * 70)
-    print("🚀 ЗАПУСК ПРИЛОЖЕНИЯ - Telegram Bot на Render")
-    print("=" * 70)
-    
-    # ========== HTTP СЕРВЕР ==========
+async def run_http_server():
+    """Запускаем HTTP сервер"""
     try:
         print("⏳ Создание HTTP приложения...")
         app = web.Application()
@@ -57,7 +54,11 @@ async def start_app():
         app.router.add_get('/health', health_handler)
         print("✅ HTTP приложение создано")
         
-        print("⏳ Запуск HTTP сервера на 0.0.0.0:{}...".format(PORT))
+        print(f"⏳ Запуск HTTP сервера на 0.0.0.0:{PORT}...")
         runner = web.AppRunner(app)
         await runner.setup()
-        site = web.
+        site = web.TCPSite(runner, '0.0.0.0', PORT)
+        await site.start()
+        
+        print(f"✅ HTTP сервер запущен на 0.0.0.0:{PORT}")
+        
