@@ -4,22 +4,27 @@ Telegram bot для Render - полностью независимый (без �
 
 import os
 import asyncio
+import sys
 from aiohttp import web
 from aiogram import Bot, Dispatcher, types
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.filters import Command
-from dotenv import load_dotenv
 
-# Загружаем переменные окружения
-load_dotenv()
-
+# Получаем переменные окружения
 PORT = int(os.getenv('PORT', 10000))
 TOKEN = os.getenv('TOKEN')
 
+print("=" * 70)
+print("🚀 ИНИЦИАЛИЗАЦИЯ ПРИЛОЖЕНИЯ")
+print("=" * 70)
+print(f"📌 Порт: {PORT}")
+print(f"🔑 Токен: {'✅ Установлен' if TOKEN else '⚠️  НЕ установлен (используется default)'}")
+print("=" * 70)
+
+# Используем default токен если не установлен
 if not TOKEN:
-    print("❌ ОШИБКА: TOKEN не установлен в переменных окружения!")
-    print("Добавьте TOKEN в Render Settings → Environment Variables")
-    exit(1)
+    TOKEN = '7954650918:AAFZlRTRxZEUXNq_IYACCn60WIq8y2NBSdI'
+    print("⚠️  Используется default TOKEN\n")
 
 # ============================================================================
 # HTTP HANDLERS ДЛЯ RENDER
@@ -43,22 +48,16 @@ async def start_app():
     print("\n" + "=" * 70)
     print("🚀 ЗАПУСК ПРИЛОЖЕНИЯ - Telegram Bot на Render")
     print("=" * 70)
-    print(f"📌 Порт: {PORT}")
-    print(f"🔑 Токен загружен: {'✅ Да' if TOKEN else '❌ Нет'}")
-    print("=" * 70)
     
     # ========== HTTP СЕРВЕР ==========
-    print("\n⏳ Запуск HTTP сервера...")
-    app = web.Application()
-    app.router.add_get('/', root_handler)
-    app.router.add_get('/health', health_handler)
-    
-    runner = web.AppRunner(app)
-    await runner.setup()
-    site = web.TCPSite(runner, '0.0.0.0', PORT)
-    await site.start()
-    
-    print(f"✅ HTTP сервер запущен на 0.0.0.0:{PORT}")
-    print(f"   Health check: http://0.0.0.0:{PORT}/health")
-    
-    # ========== TELEGRAM БОТ =====
+    try:
+        print("⏳ Создание HTTP приложения...")
+        app = web.Application()
+        app.router.add_get('/', root_handler)
+        app.router.add_get('/health', health_handler)
+        print("✅ HTTP приложение создано")
+        
+        print("⏳ Запуск HTTP сервера на 0.0.0.0:{}...".format(PORT))
+        runner = web.AppRunner(app)
+        await runner.setup()
+        site = web.
