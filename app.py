@@ -123,7 +123,7 @@ def run_bot():
                 print("⏳ Ожидание сообщений...\n")
                 sys.stdout.flush()
                 
-                await dp.start_polling(bot, skip_updates=True)
+                await dp.start_polling(bot, skip_updates=True, handle_signals=False)
                 
             except Exception as e:
                 print(f"❌ Ошибка бота: {e}")
