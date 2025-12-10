@@ -1,5 +1,6 @@
 """
 Telegram bot для Render - HTTP сервер + Бот в отдельных потоках
+Фиксированная версия с правильным синтаксисом aiogram 3.11
 """
 
 import os
@@ -7,7 +8,7 @@ import asyncio
 import sys
 import threading
 from aiohttp import web
-from aiogram import Bot, Dispatcher, types
+from aiogram import Bot, Dispatcher, types, F
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.filters import Command
 
@@ -28,11 +29,19 @@ if not TOKEN:
 
 sys.stdout.flush()
 
+# ============================================================================
+# HTTP HANDLERS
+# ============================================================================
+
 async def health_handler(request):
     return web.json_response({"status": "ok", "service": "tutor_bot"})
 
 async def root_handler(request):
     return web.Response(text="🤖 Telegram бот работает!", status=200)
+
+# ============================================================================
+# HTTP SERVER
+# ============================================================================
 
 async def run_http_server():
     try:
@@ -60,6 +69,10 @@ async def run_http_server():
         import traceback
         traceback.print_exc()
 
+# ============================================================================
+# TELEGRAM BOT
+# ============================================================================
+
 def run_bot():
     try:
         print("\n⏳ Инициализация Telegram бота...")
@@ -75,21 +88,36 @@ def run_bot():
                 dp = Dispatcher(storage=storage)
                 print("✅ Диспетчер создан")
                 
-                @dp.message.register(Command("start"))
+                print("⏳ Регистрация обработчиков...")
+                
+                @dp.message(Command("start"))
                 async def start_handler(message: types.Message):
-                    await message.answer("👋 Привет! Я бот для управления расписанием репетитора.\n\nДоступные команды:\n/help - справка\n/status - статус бота")
+                    await message.answer(
+                        "👋 Привет! Я бот для управления расписанием репетитора.\n\n"
+                        "Доступные команды:\n"
+                        "/help - справка\n"
+                        "/status - статус бота"
+                    )
                 
-                @dp.message.register(Command("help"))
+                @dp.message(Command("help"))
                 async def help_handler(message: types.Message):
-                    await message.answer("📖 Справка:\n/start - начать\n/help - эта справка\n/status - проверить статус")
+                    await message.answer(
+                        "📖 Справка:\n"
+                        "/start - начать\n"
+                        "/help - эта справка\n"
+                        "/status - проверить статус"
+                    )
                 
-                @dp.message.register(Command("status"))
+                @dp.message(Command("status"))
                 async def status_handler(message: types.Message):
                     await message.answer("✅ Бот работает нормально!")
                 
-                @dp.message.register()
+                @dp.message()
                 async def echo_handler(message: types.Message):
-                    await message.answer(f"Вы написали: {message.text}\n\nНапишите /help для справки")
+                    await message.answer(
+                        f"Вы написали: {message.text}\n\n"
+                        "Напишите /help для справки"
+                    )
                 
                 print("✅ Обработчики зарегистрированы")
                 print("⏳ Ожидание сообщений...\n")
@@ -108,6 +136,10 @@ def run_bot():
         print(f"❌ Критическая ошибка бота: {e}")
         import traceback
         traceback.print_exc()
+
+# ============================================================================
+# MAIN
+# ============================================================================
 
 if __name__ == "__main__":
     try:
