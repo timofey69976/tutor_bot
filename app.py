@@ -2,7 +2,8 @@
 """
 Telegram бот для управления расписанием занятий репетитора
 Адаптирован для работы на Render с HTTP сервером
-С ПОЛНОЙ ЗАЩИТОЙ ОТ КОНФЛИКТОВ И СИСТЕМОЙ ПОДТВЕРЖДЕНИЯ
+С МАКСИМАЛЬНОЙ ЗАЩИТОЙ ОТ КОНФЛИКТОВ И СИСТЕМОЙ ПОДТВЕРЖДЕНИЯ
+С KEEP-ALIVE ДЛЯ ПРЕДОТВРАЩЕНИЯ ГИБЕРНАЦИИ
 """
 
 import os
@@ -13,7 +14,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional, Dict, List, Tuple
 
-from aiohttp import web
+from aiohttp import web, ClientSession
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -27,6 +28,7 @@ from aiogram.filters import Command
 
 PORT = int(os.getenv('PORT', 10000))
 TOKEN = os.getenv('TOKEN')
+RENDER_URL = os.getenv('RENDER_URL', '')  # https://your-app.onrender.com
 
 if not TOKEN:
     TOKEN = '7954650918:AAFZlRTRxZEUXNq_IYACCn60WIq8y2NBSdI'
@@ -65,6 +67,29 @@ def load_json(filepath):
 def save_json(filepath, data):
     with open(filepath, 'w', encoding='utf-8') as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
+
+def cleanup_stale_requests():
+    """Удаляет pending-запросы старше 24 часов"""
+    now = datetime.now()
+    
+    for filepath in [PENDING_FILE, PENDING_RESCHEDULES_FILE, PENDING_CANCELS_FILE]:
+        data = load_json(filepath)
+        stale_ids = []
+        
+        for req_id, req in data.items():
+            try:
+                req_time = datetime.fromisoformat(req.get("timestamp", ""))
+                if (now - req_time).total_seconds() > 86400:  # 24 часа
+                    stale_ids.append(req_id)
+            except:
+                pass
+        
+        for req_id in stale_ids:
+            del data[req_id]
+            print(f"🗑️  Удален старый запрос: {req_id}")
+        
+        if stale_ids:
+            save_json(filepath, data)
 
 # ============================================================================
 # СОСТОЯНИЯ (FSM)
@@ -121,7 +146,6 @@ def persistent_menu_keyboard():
     ], resize_keyboard=True, one_time_keyboard=False)
 
 def subjects_keyboard_single():
-    """Выбор ОДНОГО предмета"""
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=s, callback_data=f"subject_single_{s}")] for s in SUBJECTS
     ])
@@ -356,7 +380,6 @@ async def reschedule_time_handler(callback: types.CallbackQuery, state: FSMConte
     week = get_week_dates()
     _, new_date_str = week[day_name]
     
-    # Сохраняем запрос на перенос, ждём подтверждения от репетитора
     pending_reschedules = load_json(PENDING_RESCHEDULES_FILE)
     pending_reschedules[reschedule_id] = {
         "lesson_id": lesson_id,
@@ -417,18 +440,15 @@ async def tutor_confirm_reschedule_handler(callback: types.CallbackQuery):
     confirmed = load_json(CONFIRMED_FILE)
     schedule = load_json(SCHEDULE_FILE) or DEFAULT_SCHEDULE
     
-    # Освобождаем старое время
     if reschedule["old_time"] not in schedule.get(reschedule["old_day"], []):
         schedule.setdefault(reschedule["old_day"], []).append(reschedule["old_time"])
         schedule[reschedule["old_day"]].sort()
     
-    # Занимаем новое время
     if reschedule["new_time"] in schedule.get(reschedule["new_day"], []):
         schedule[reschedule["new_day"]].remove(reschedule["new_time"])
     
     save_json(SCHEDULE_FILE, schedule)
     
-    # Обновляем занятие
     if lesson_id in confirmed:
         confirmed[lesson_id]["day"] = reschedule["new_day"]
         confirmed[lesson_id]["time"] = reschedule["new_time"]
@@ -524,7 +544,6 @@ async def cancel_pick_handler(callback: types.CallbackQuery, state: FSMContext):
     lesson = confirmed[lesson_id]
     cancel_id = create_request_id()
     
-    # Сохраняем запрос на отмену, ждём подтверждения от репетитора
     pending_cancels = load_json(PENDING_CANCELS_FILE)
     pending_cancels[cancel_id] = {
         "lesson_id": lesson_id,
@@ -583,13 +602,11 @@ async def tutor_confirm_cancel_handler(callback: types.CallbackQuery):
     confirmed = load_json(CONFIRMED_FILE)
     schedule = load_json(SCHEDULE_FILE) or DEFAULT_SCHEDULE
     
-    # Освобождаем время
     if cancel["time"] not in schedule.get(cancel["day"], []):
         schedule.setdefault(cancel["day"], []).append(cancel["time"])
         schedule[cancel["day"]].sort()
     save_json(SCHEDULE_FILE, schedule)
     
-    # Удаляем занятие
     if lesson_id in confirmed:
         del confirmed[lesson_id]
         save_json(CONFIRMED_FILE, confirmed)
@@ -988,12 +1005,48 @@ async def send_reminders(bot: Bot):
         except:
             await asyncio.sleep(30)
 
+async def cleanup_task(bot: Bot):
+    """Очистка старых данных каждый час"""
+    while True:
+        try:
+            await asyncio.sleep(3600)
+            cleanup_stale_requests()
+            print(f"✅ Очистка старых данных завершена [{datetime.now().strftime('%H:%M:%S')}]")
+        except Exception as e:
+            print(f"Cleanup task error: {e}")
+            await asyncio.sleep(300)
+
+async def keep_alive_task():
+    """Периодический keep-alive запрос к своему серверу"""
+    if not RENDER_URL:
+        print("⚠️  RENDER_URL не установлен. Keep-alive отключен.")
+        return
+    
+    await asyncio.sleep(30)  # Начинаем после инициализации
+    
+    while True:
+        try:
+            await asyncio.sleep(840)  # 14 минут (меньше лимита 15 мин)
+            
+            async with ClientSession() as session:
+                try:
+                    async with session.get(f"{RENDER_URL}/health", timeout=5) as resp:
+                        if resp.status == 200:
+                            print(f"✅ Keep-alive ping успешен [{datetime.now().strftime('%H:%M:%S')}]")
+                        else:
+                            print(f"⚠️  Keep-alive ответ: {resp.status}")
+                except Exception as e:
+                    print(f"⚠️  Keep-alive ошибка: {e}")
+        except Exception as e:
+            print(f"❌ Keep-alive task error: {e}")
+            await asyncio.sleep(60)
+
 # ============================================================================
 # HTTP СЕРВЕР
 # ============================================================================
 
 async def health_handler(request):
-    return web.json_response({"status": "ok", "service": "tutor_bot"})
+    return web.json_response({"status": "ok", "service": "tutor_bot", "timestamp": datetime.now().isoformat()})
 
 async def root_handler(request):
     return web.Response(text="Bot is running!", status=200)
@@ -1025,13 +1078,13 @@ async def run_http_server():
         traceback.print_exc()
 
 # ============================================================================
-# БОТ - С ПОЛНОЙ ЗАЩИТОЙ ОТ КОНФЛИКТОВ
+# БОТ
 # ============================================================================
 
 async def start_bot():
-    """Запуск бота с обработкой TelegramConflictError и автоматическим перезапуском"""
+    """Запуск бота с защитой от конфликтов"""
     retry_count = 0
-    max_retries = 5
+    max_retries = 10
     
     while retry_count < max_retries:
         try:
@@ -1072,28 +1125,27 @@ async def start_bot():
             print("Waiting for messages from Telegram...\n")
             sys.stdout.flush()
             
-            # Сброс retry_count при успешном подключении
             retry_count = 0
             
             asyncio.create_task(send_reminders(bot))
             asyncio.create_task(send_daily_schedule(bot))
+            asyncio.create_task(cleanup_task(bot))
+            asyncio.create_task(keep_alive_task())
             
-            # ✅ ОСНОВНОЙ ЦИКЛ POLLING
             await dp.start_polling(bot, skip_updates=True, handle_signals=False)
             
         except Exception as e:
             error_msg = str(e).lower()
             
-            # ✅ ОБРАБОТКА КОНФЛИКТА GETUPDATES
             if "conflict" in error_msg or "getupdates" in error_msg:
                 retry_count += 1
-                wait_time = min(5 * (2 ** retry_count), 300)  # Exponential backoff до 5 минут
+                wait_time = min(10 * (2 ** retry_count), 600)
                 print(f"\n⚠️  TelegramConflictError! Попытка перезапуска {retry_count}/{max_retries}")
                 print(f"   Ожидаю {wait_time} секунд перед перезапуском...")
+                sys.stdout.flush()
                 await asyncio.sleep(wait_time)
                 continue
             
-            # ❌ ДРУГИЕ КРИТИЧЕСКИЕ ОШИБКИ
             print(f"ERROR: Bot error: {e}")
             import traceback
             traceback.print_exc()
@@ -1106,7 +1158,7 @@ async def start_bot():
         sys.exit(1)
 
 # ============================================================================
-# MAIN - С ЗАЩИТОЙ ОТ ДВОЙНОГО ЗАПУСКА
+# MAIN
 # ============================================================================
 
 async def main():
@@ -1115,10 +1167,10 @@ async def main():
     print("=" * 70)
     print(f"Port: {PORT}")
     print(f"Token: {'OK' if TOKEN else 'NOT SET'}")
+    print(f"Render URL: {RENDER_URL if RENDER_URL else 'NOT SET (keep-alive disabled)'}")
     print("=" * 70 + "\n")
     sys.stdout.flush()
     
-    # ✅ ЗАЩИТА ОТ ДВОЙНОГО ЗАПУСКА БОТА
     lock_file = Path(".bot_running.lock")
     
     if lock_file.exists():
@@ -1130,6 +1182,11 @@ async def main():
     
     lock_file.write_text(str(os.getpid()))
     print(f"✅ Lock file created: {lock_file}\n")
+    
+    print("🧹 Performing startup cleanup...")
+    cleanup_stale_requests()
+    print("✅ Startup cleanup completed\n")
+    sys.stdout.flush()
     
     try:
         await asyncio.gather(
@@ -1143,7 +1200,6 @@ async def main():
         import traceback
         traceback.print_exc()
     finally:
-        # Очистка при завершении
         if lock_file.exists():
             try:
                 lock_file.unlink()
@@ -1161,3 +1217,4 @@ if __name__ == "__main__":
         print(f"ERROR: Main thread error: {e}")
         import traceback
         traceback.print_exc()
+
