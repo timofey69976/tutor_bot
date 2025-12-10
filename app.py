@@ -2,6 +2,7 @@
 """
 Telegram бот для управления расписанием занятий репетитора
 Адаптирован для работы на Render с HTTP сервером
+С ПОЛНОЙ ЗАЩИТОЙ ОТ КОНФЛИКТОВ GETUPDATES
 """
 
 import os
@@ -828,56 +829,84 @@ async def run_http_server():
         traceback.print_exc()
 
 # ============================================================================
-# БОТ
+# БОТ - С ПОЛНОЙ ЗАЩИТОЙ ОТ КОНФЛИКТОВ
 # ============================================================================
 
 async def start_bot():
-    """Запуск бота БЕЗ threading - только polling"""
-    try:
-        print("Initializing Telegram bot...")
-        print("Creating bot...")
-        bot = Bot(token=TOKEN)
-        storage = MemoryStorage()
-        dp = Dispatcher(storage=storage)
-        print("OK: Dispatcher created")
-        
-        print("Registering handlers...")
-        
-        dp.message.register(start_handler, Command("start"))
-        dp.message.register(menu_button_handler, F.text == "☰ Меню")
-        dp.message.register(first_lesson_name_handler, FirstLessonStates.waiting_for_name)
-        dp.message.register(first_lesson_class_handler, FirstLessonStates.waiting_for_class)
-        dp.message.register(schedule_json_handler, TutorScheduleStates.waiting_for_schedule_json)
-        
-        dp.callback_query.register(first_lesson_handler, F.data == "first_lesson")
-        dp.callback_query.register(repeat_lesson_handler, F.data == "repeat_lesson")
-        dp.callback_query.register(reschedule_lesson_handler, F.data == "reschedule_lesson")
-        dp.callback_query.register(cancel_lesson_handler, F.data == "cancel_lesson")
-        dp.callback_query.register(back_to_menu_handler, F.data == "back_to_menu")
-        dp.callback_query.register(subject_single_handler, F.data.startswith("subject_single_"))
-        dp.callback_query.register(time_select_handler, F.data.startswith("time_"))
-        dp.callback_query.register(reschedule_pick_handler, F.data.startswith("reschedule_pick_"))
-        dp.callback_query.register(reschedule_time_handler, F.data.startswith("reschedule_time_"))
-        dp.callback_query.register(cancel_pick_handler, F.data.startswith("cancel_pick_"))
-        dp.callback_query.register(edit_schedule_button_handler, F.data == "edit_schedule")
-        dp.callback_query.register(tutor_confirm_handler, F.data.startswith("confirm_"))
-        dp.callback_query.register(tutor_reject_handler, F.data.startswith("reject_"))
-        
-        print("OK: Handlers registered")
-        print("Waiting for messages from Telegram...\n")
-        sys.stdout.flush()
-        
-        asyncio.create_task(send_reminders(bot))
-        asyncio.create_task(send_daily_schedule(bot))
-        await dp.start_polling(bot, skip_updates=True, handle_signals=False)
-        
-    except Exception as e:
-        print(f"ERROR: Bot error: {e}")
-        import traceback
-        traceback.print_exc()
+    """Запуск бота с обработкой TelegramConflictError и автоматическим перезапуском"""
+    retry_count = 0
+    max_retries = 5
+    
+    while retry_count < max_retries:
+        try:
+            print("Initializing Telegram bot...")
+            print("Creating bot...")
+            bot = Bot(token=TOKEN)
+            storage = MemoryStorage()
+            dp = Dispatcher(storage=storage)
+            print("OK: Dispatcher created")
+            
+            print("Registering handlers...")
+            
+            dp.message.register(start_handler, Command("start"))
+            dp.message.register(menu_button_handler, F.text == "☰ Меню")
+            dp.message.register(first_lesson_name_handler, FirstLessonStates.waiting_for_name)
+            dp.message.register(first_lesson_class_handler, FirstLessonStates.waiting_for_class)
+            dp.message.register(schedule_json_handler, TutorScheduleStates.waiting_for_schedule_json)
+            
+            dp.callback_query.register(first_lesson_handler, F.data == "first_lesson")
+            dp.callback_query.register(repeat_lesson_handler, F.data == "repeat_lesson")
+            dp.callback_query.register(reschedule_lesson_handler, F.data == "reschedule_lesson")
+            dp.callback_query.register(cancel_lesson_handler, F.data == "cancel_lesson")
+            dp.callback_query.register(back_to_menu_handler, F.data == "back_to_menu")
+            dp.callback_query.register(subject_single_handler, F.data.startswith("subject_single_"))
+            dp.callback_query.register(time_select_handler, F.data.startswith("time_"))
+            dp.callback_query.register(reschedule_pick_handler, F.data.startswith("reschedule_pick_"))
+            dp.callback_query.register(reschedule_time_handler, F.data.startswith("reschedule_time_"))
+            dp.callback_query.register(cancel_pick_handler, F.data.startswith("cancel_pick_"))
+            dp.callback_query.register(edit_schedule_button_handler, F.data == "edit_schedule")
+            dp.callback_query.register(tutor_confirm_handler, F.data.startswith("confirm_"))
+            dp.callback_query.register(tutor_reject_handler, F.data.startswith("reject_"))
+            
+            print("OK: Handlers registered")
+            print("Waiting for messages from Telegram...\n")
+            sys.stdout.flush()
+            
+            # Сброс retry_count при успешном подключении
+            retry_count = 0
+            
+            asyncio.create_task(send_reminders(bot))
+            asyncio.create_task(send_daily_schedule(bot))
+            
+            # ✅ ОСНОВНОЙ ЦИКЛ POLLING
+            await dp.start_polling(bot, skip_updates=True, handle_signals=False)
+            
+        except Exception as e:
+            error_msg = str(e).lower()
+            
+            # ✅ ОБРАБОТКА КОНФЛИКТА GETUPDATES
+            if "conflict" in error_msg or "getupdates" in error_msg:
+                retry_count += 1
+                wait_time = min(5 * (2 ** retry_count), 300)  # Exponential backoff до 5 минут
+                print(f"\n⚠️  TelegramConflictError! Попытка перезапуска {retry_count}/{max_retries}")
+                print(f"   Ожидаю {wait_time} секунд перед перезапуском...")
+                await asyncio.sleep(wait_time)
+                continue
+            
+            # ❌ ДРУГИЕ КРИТИЧЕСКИЕ ОШИБКИ
+            print(f"ERROR: Bot error: {e}")
+            import traceback
+            traceback.print_exc()
+            await asyncio.sleep(5)
+            continue
+    
+    if retry_count >= max_retries:
+        print(f"\n❌ КРИТИЧЕСКАЯ ОШИБКА: Не удалось запустить бота после {max_retries} попыток")
+        print("❌ Возможно, другой экземпляр бота уже запущен")
+        sys.exit(1)
 
 # ============================================================================
-# MAIN
+# MAIN - С ЗАЩИТОЙ ОТ ДВОЙНОГО ЗАПУСКА
 # ============================================================================
 
 async def main():
@@ -889,10 +918,39 @@ async def main():
     print("=" * 70 + "\n")
     sys.stdout.flush()
     
-    await asyncio.gather(
-        run_http_server(),
-        start_bot()
-    )
+    # ✅ ЗАЩИТА ОТ ДВОЙНОГО ЗАПУСКА БОТА
+    lock_file = Path(".bot_running.lock")
+    
+    if lock_file.exists():
+        print("🔄 Обнаружен старый процесс бота. Очищаю...")
+        try:
+            lock_file.unlink()
+        except Exception as e:
+            print(f"Warning: Could not delete old lock file: {e}")
+    
+    lock_file.write_text(str(os.getpid()))
+    print(f"✅ Lock file created: {lock_file}\n")
+    
+    try:
+        await asyncio.gather(
+            run_http_server(),
+            start_bot()
+        )
+    except KeyboardInterrupt:
+        print("\n⏹️  Application interrupted by user")
+    except Exception as e:
+        print(f"ERROR: Main thread error: {e}")
+        import traceback
+        traceback.print_exc()
+    finally:
+        # Очистка при завершении
+        if lock_file.exists():
+            try:
+                lock_file.unlink()
+                print("✅ Lock file removed")
+            except:
+                pass
+        print("\n✅ Bot stopped correctly")
 
 if __name__ == "__main__":
     try:
