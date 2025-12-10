@@ -1,5 +1,5 @@
 """
-Главный файл для Render - HTTP сервер + Telegram бот
+Telegram bot для Render - полностью независимый (без импортов из других файлов)
 """
 
 import os
@@ -8,16 +8,25 @@ from aiohttp import web
 from aiogram import Bot, Dispatcher, types
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.filters import Command
+from dotenv import load_dotenv
+
+# Загружаем переменные окружения
+load_dotenv()
 
 PORT = int(os.getenv('PORT', 10000))
-TOKEN = os.getenv('TOKEN', '7954650918:AAFZlRTRxZEUXNq_IYACCn60WIq8y2NBSdI')
+TOKEN = os.getenv('TOKEN')
+
+if not TOKEN:
+    print("❌ ОШИБКА: TOKEN не установлен в переменных окружения!")
+    print("Добавьте TOKEN в Render Settings → Environment Variables")
+    exit(1)
 
 # ============================================================================
 # HTTP HANDLERS ДЛЯ RENDER
 # ============================================================================
 
 async def health_handler(request):
-    """Health check"""
+    """Health check для Render"""
     return web.json_response({"status": "ok", "service": "tutor_bot"})
 
 async def root_handler(request):
@@ -29,37 +38,27 @@ async def root_handler(request):
 # ============================================================================
 
 async def start_app():
-    """Запускаем HTTP сервер и бота"""
+    """Запускаем HTTP сервер и Telegram бота"""
     
-    print("\n" + "=" * 60)
-    print("🚀 ЗАПУСК ПРИЛОЖЕНИЯ")
-    print("=" * 60)
+    print("\n" + "=" * 70)
+    print("🚀 ЗАПУСК ПРИЛОЖЕНИЯ - Telegram Bot на Render")
+    print("=" * 70)
+    print(f"📌 Порт: {PORT}")
+    print(f"🔑 Токен загружен: {'✅ Да' if TOKEN else '❌ Нет'}")
+    print("=" * 70)
     
-    # Создаем HTTP приложение
+    # ========== HTTP СЕРВЕР ==========
+    print("\n⏳ Запуск HTTP сервера...")
     app = web.Application()
     app.router.add_get('/', root_handler)
     app.router.add_get('/health', health_handler)
     
-    # Запускаем HTTP сервер
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, '0.0.0.0', PORT)
     await site.start()
     
-    print(f"✅ HTTP сервер запущен на http://0.0.0.0:{PORT}")
-    print("=" * 60)
-    print("🤖 Telegram бот начинает работу...")
-    print("=" * 60 + "\n")
+    print(f"✅ HTTP сервер запущен на 0.0.0.0:{PORT}")
+    print(f"   Health check: http://0.0.0.0:{PORT}/health")
     
-    # Инициализируем бота
-    bot = Bot(token=TOKEN)
-    storage = MemoryStorage()
-    dp = Dispatcher(storage=storage)
-    
-    # Регистрируем минимальный обработчик
-    @dp.message.register(Command("start"))
-    async def start_handler(message: types.Message):
-        await message.answer("👋 Бот работает! Напишите /help для справки")
-    
-    @dp.message.register(Command("help"))
-    asyn
+    # ========== TELEGRAM БОТ =====
