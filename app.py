@@ -640,8 +640,12 @@ def run_bot():
                 print("⏳ Ожидание сообщений от Telegram...\n")
                 sys.stdout.flush()
                 
-                asyncio.create_task(send_reminders(bot))
-                await dp.start_polling(bot, skip_updates=True, handle_signals=False)
+                # Запускаем напоминания в фоне
+                reminder_task = asyncio.create_task(send_reminders(bot))
+                try:
+                    await dp.start_polling(bot, skip_updates=True, handle_signals=False)
+                finally:
+                    reminder_task.cancel()
                 
             except Exception as e:
                 print(f"❌ Ошибка бота: {e}")
@@ -681,3 +685,4 @@ if __name__ == "__main__":
         print(f"❌ Ошибка главного потока: {e}")
         import traceback
         traceback.print_exc()
+
