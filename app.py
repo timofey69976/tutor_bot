@@ -3,6 +3,7 @@
 """
 Telegram бот для управления расписанием занятий репетитора
 ПОЛНАЯ СИСТЕМА: все функции работают, все данные ученика сохраняются
+ИСПРАВЛЕНО: кнопки подтверждения для переноса и отмены, данные в повторных занятиях
 """
 
 import os
@@ -181,6 +182,18 @@ def tutor_confirm_keyboard(request_id: str):
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✅ Подтвердить", callback_data=f"confirm_{request_id}")],
         [InlineKeyboardButton(text="❌ Отклонить", callback_data=f"reject_{request_id}")]
+    ])
+
+def tutor_reschedule_confirm_keyboard(reschedule_id: str):
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Подтвердить", callback_data=f"confirm_reschedule_{reschedule_id}")],
+        [InlineKeyboardButton(text="❌ Отклонить", callback_data=f"reject_reschedule_{reschedule_id}")]
+    ])
+
+def tutor_cancel_confirm_keyboard(cancel_id: str):
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Подтвердить", callback_data=f"confirm_cancel_{cancel_id}")],
+        [InlineKeyboardButton(text="❌ Отклонить", callback_data=f"reject_cancel_{cancel_id}")]
     ])
 
 def lessons_list_keyboard(lessons: Dict, action_type: str = "reschedule"):
@@ -1066,6 +1079,7 @@ async def reschedule_confirm_handler(callback: types.CallbackQuery, state: FSMCo
         f"📖 Предмет: {subject}\n"
         f"📅 Новая дата: {lesson_date_str}\n"
         f"⏰ Новое время: {lesson_time_str}",
+        reply_markup=tutor_reschedule_confirm_keyboard(reschedule_id),
         parse_mode="HTML"
     )
     
@@ -1082,6 +1096,92 @@ async def reschedule_confirm_handler(callback: types.CallbackQuery, state: FSMCo
     
     await state.clear()
     await callback.answer()
+
+async def confirm_reschedule_handler(callback: types.CallbackQuery, bot: Bot):
+    """Подтверждение переноса занятия репетитором"""
+    reschedule_id = callback.data.replace("confirm_reschedule_", "")
+    
+    pending_reschedules = load_json(PENDING_RESCHEDULES_FILE)
+    if reschedule_id not in pending_reschedules:
+        await callback.answer("❌ Запрос не найден", show_alert=True)
+        return
+    
+    reschedule = pending_reschedules[reschedule_id]
+    lesson_id = reschedule["lesson_id"]
+    student_id = reschedule["student_id"]
+    student_name = reschedule["student_name"]
+    student_class = reschedule["student_class"]
+    subject = reschedule["subject"]
+    new_datetime_str = reschedule["new_lesson_datetime"]
+    
+    # Обновляем занятие в confirmed
+    confirmed = load_json(CONFIRMED_FILE)
+    if lesson_id in confirmed:
+        confirmed[lesson_id]["lesson_datetime"] = new_datetime_str
+        new_datetime = datetime.fromisoformat(new_datetime_str)
+        confirmed[lesson_id]["date_str"] = new_datetime.strftime("%d.%m.%Y")
+        confirmed[lesson_id]["time"] = new_datetime.strftime("%H:%M")
+        save_json(CONFIRMED_FILE, confirmed)
+    
+    # Удаляем из pending
+    del pending_reschedules[reschedule_id]
+    save_json(PENDING_RESCHEDULES_FILE, pending_reschedules)
+    
+    # Уведомляем ученика
+    new_datetime = datetime.fromisoformat(new_datetime_str)
+    date_str = new_datetime.strftime("%d.%m.%Y")
+    time_str = new_datetime.strftime("%H:%M")
+    
+    await bot.send_message(
+        student_id,
+        f"✅ <b>Ваш запрос на перенос подтвержден!</b>\n\n"
+        f"📅 Новая дата: {date_str}\n"
+        f"⏰ Новое время: {time_str}\n"
+        f"📖 Предмет: {subject}",
+        reply_markup=persistent_menu_keyboard(),
+        parse_mode="HTML"
+    )
+    
+    await callback.message.edit_text(
+        f"✅ <b>Перенос подтвержден!</b>\n\n"
+        f"Ученик {student_name} ({student_class}) был уведомлен.",
+        parse_mode="HTML"
+    )
+    
+    await callback.answer("✅ Перенос подтвержден")
+
+async def reject_reschedule_handler(callback: types.CallbackQuery, bot: Bot):
+    """Отклонение переноса занятия репетитором"""
+    reschedule_id = callback.data.replace("reject_reschedule_", "")
+    
+    pending_reschedules = load_json(PENDING_RESCHEDULES_FILE)
+    if reschedule_id not in pending_reschedules:
+        await callback.answer("❌ Запрос не найден", show_alert=True)
+        return
+    
+    reschedule = pending_reschedules[reschedule_id]
+    student_id = reschedule["student_id"]
+    student_name = reschedule["student_name"]
+    
+    del pending_reschedules[reschedule_id]
+    save_json(PENDING_RESCHEDULES_FILE, pending_reschedules)
+    
+    await bot.send_message(
+        student_id,
+        f"❌ <b>Запрос на перенос отклонен</b>\n\n"
+        f"Репетитор не может перенести занятие на это время.\n"
+        f"Пожалуйста, выберите другое время.",
+        reply_markup=persistent_menu_keyboard(),
+        parse_mode="HTML"
+    )
+    
+    await callback.message.edit_text(
+        f"❌ <b>Перенос отклонен!</b>\n\n"
+        f"Ученик {student_name} был уведомлен.",
+        parse_mode="HTML"
+    )
+    
+    await callback.answer("❌ Перенос отклонен")
 
 async def cancel_lesson_handler(callback: types.CallbackQuery, state: FSMContext):
     """Запуск процесса отмены занятия"""
@@ -1155,6 +1255,7 @@ async def cancel_pick_handler(callback: types.CallbackQuery, state: FSMContext, 
         f"📖 Предмет: {lesson['subject']}\n"
         f"📅 Дата: {lesson_date_str}\n"
         f"⏰ Время: {lesson_time_str}",
+        reply_markup=tutor_cancel_confirm_keyboard(cancel_id),
         parse_mode="HTML"
     )
     
@@ -1170,6 +1271,80 @@ async def cancel_pick_handler(callback: types.CallbackQuery, state: FSMContext, 
     
     await state.clear()
     await callback.answer()
+
+async def confirm_cancel_handler(callback: types.CallbackQuery, bot: Bot):
+    """Подтверждение отмены занятия репетитором"""
+    cancel_id = callback.data.replace("confirm_cancel_", "")
+    
+    pending_cancels = load_json(PENDING_CANCELS_FILE)
+    if cancel_id not in pending_cancels:
+        await callback.answer("❌ Запрос не найден", show_alert=True)
+        return
+    
+    cancel = pending_cancels[cancel_id]
+    lesson_id = cancel["lesson_id"]
+    student_id = cancel["student_id"]
+    student_name = cancel["student_name"]
+    
+    # Удаляем занятие из confirmed
+    confirmed = load_json(CONFIRMED_FILE)
+    if lesson_id in confirmed:
+        del confirmed[lesson_id]
+        save_json(CONFIRMED_FILE, confirmed)
+    
+    # Удаляем из pending
+    del pending_cancels[cancel_id]
+    save_json(PENDING_CANCELS_FILE, pending_cancels)
+    
+    # Уведомляем ученика
+    await bot.send_message(
+        student_id,
+        f"✅ <b>Ваша заявка на отмену одобрена!</b>\n\n"
+        f"Занятие было отменено.",
+        reply_markup=persistent_menu_keyboard(),
+        parse_mode="HTML"
+    )
+    
+    await callback.message.edit_text(
+        f"✅ <b>Отмена подтверждена!</b>\n\n"
+        f"Ученик {student_name} был уведомлен.",
+        parse_mode="HTML"
+    )
+    
+    await callback.answer("✅ Отмена подтверждена")
+
+async def reject_cancel_handler(callback: types.CallbackQuery, bot: Bot):
+    """Отклонение отмены занятия репетитором"""
+    cancel_id = callback.data.replace("reject_cancel_", "")
+    
+    pending_cancels = load_json(PENDING_CANCELS_FILE)
+    if cancel_id not in pending_cancels:
+        await callback.answer("❌ Запрос не найден", show_alert=True)
+        return
+    
+    cancel = pending_cancels[cancel_id]
+    student_id = cancel["student_id"]
+    student_name = cancel["student_name"]
+    
+    del pending_cancels[cancel_id]
+    save_json(PENDING_CANCELS_FILE, pending_cancels)
+    
+    await bot.send_message(
+        student_id,
+        f"❌ <b>Запрос на отмену отклонен</b>\n\n"
+        f"Репетитор не отменяет это занятие.\n"
+        f"Занятие остается в расписании.",
+        reply_markup=persistent_menu_keyboard(),
+        parse_mode="HTML"
+    )
+    
+    await callback.message.edit_text(
+        f"❌ <b>Отмена отклонена!</b>\n\n"
+        f"Ученик {student_name} был уведомлен.",
+        parse_mode="HTML"
+    )
+    
+    await callback.answer("❌ Отмена отклонена")
 
 async def back_to_menu_handler(callback: types.CallbackQuery, state: FSMContext):
     """Возврат в главное меню"""
@@ -1553,6 +1728,10 @@ async def start_bot():
             dp.callback_query.register(interactive_day_select_handler, F.data.startswith("iday_"))
             dp.callback_query.register(interactive_save_handler, F.data == "isave_schedule")
             dp.callback_query.register(back_to_schedule_menu_handler, F.data == "back_to_schedule_menu")
+            dp.callback_query.register(confirm_reschedule_handler, F.data.startswith("confirm_reschedule_"))
+            dp.callback_query.register(reject_reschedule_handler, F.data.startswith("reject_reschedule_"))
+            dp.callback_query.register(confirm_cancel_handler, F.data.startswith("confirm_cancel_"))
+            dp.callback_query.register(reject_cancel_handler, F.data.startswith("reject_cancel_"))
             dp.callback_query.register(confirm_request_handler, F.data.startswith("confirm_"))
             dp.callback_query.register(reject_request_handler, F.data.startswith("reject_"))
             
@@ -1595,7 +1774,7 @@ async def start_bot():
 
 async def main():
     print("=" * 70)
-    print("INITIALIZING APPLICATION - COMPLETE SYSTEM")
+    print("INITIALIZING APPLICATION - COMPLETE SYSTEM (FULLY FIXED)")
     print("=" * 70)
     print(f"Port: {PORT}")
     print(f"Token: {'OK' if TOKEN else 'NOT SET'}")
