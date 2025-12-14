@@ -36,7 +36,7 @@ if not TOKEN:
 TUTOR_ID = 1339816111
 SUBJECTS = ["Математика", "Физика", "Химия"]
 DEFAULT_SCHEDULE = {
-    "Monday": [f"{h}:00" for h in range(18, 21)],
+    "Monday": [f"{h}:30" for h in range(19, 21)],
     "Tuesday": [f"{h}:30" for h in range(19, 21)],
     "Wednesday": [],
     "Thursday": ["18:15", "19:15", "20:15", "21:15"],
