@@ -2,7 +2,7 @@
 
 """
 Telegram бот для управления расписанием занятий репетитора
-ВСЕ ОБРАБОТЧИКИ ДОБАВЛЕНЫ - все кнопки теперь работают!
+ПОЛНАЯ СИСТЕМА: все функции работают, все данные ученика сохраняются
 """
 
 import os
@@ -273,6 +273,17 @@ def get_tutor_lessons() -> Dict:
             pass
     
     return tutor_lessons
+
+def save_student_info(student_id: int, name: str, grade: str):
+    """Сохраняет информацию о ученике"""
+    students = load_json(STUDENTS_FILE)
+    students[str(student_id)] = {"name": name, "grade": grade}
+    save_json(STUDENTS_FILE, students)
+
+def get_student_info(student_id: int) -> Optional[Dict]:
+    """Получает информацию о ученике"""
+    students = load_json(STUDENTS_FILE)
+    return students.get(str(student_id))
 
 def format_student_schedule_message(lessons: Dict) -> str:
     """Форматирует расписание для ученика"""
@@ -572,7 +583,6 @@ async def time_select_handler(callback: types.CallbackQuery, state: FSMContext):
 
 async def confirm_time_handler(callback: types.CallbackQuery, state: FSMContext, bot: Bot):
     """Обработчик подтверждения времени"""
-    # Парсим callback_data: confirm_time_{day_name}_{time}
     parts = callback.data.split("_")
     day_name = parts[2]
     time_str = "_".join(parts[3:])
@@ -588,6 +598,9 @@ async def confirm_time_handler(callback: types.CallbackQuery, state: FSMContext,
     if not lesson_datetime:
         await callback.answer("❌ Ошибка: не удалось определить время занятия")
         return
+    
+    # СОХРАНЯЕМ ДАННЫЕ УЧЕНИКА ДЛЯ БУДУЩИХ ЗАНЯТИЙ
+    save_student_info(student_id, student_name, student_class)
     
     # Сохраняем запрос в pending
     request_id = create_request_id()
@@ -637,7 +650,7 @@ async def confirm_time_handler(callback: types.CallbackQuery, state: FSMContext,
     await callback.answer()
 
 async def confirm_request_handler(callback: types.CallbackQuery, bot: Bot):
-    """НОВЫЙ ОБРАБОТЧИК: Репетитор подтверждает запрос"""
+    """Подтверждение запроса репетитором"""
     request_id = callback.data.replace("confirm_", "")
     
     pending = load_json(PENDING_FILE)
@@ -648,6 +661,7 @@ async def confirm_request_handler(callback: types.CallbackQuery, bot: Bot):
     request = pending[request_id]
     student_id = request["student_id"]
     student_name = request["student_name"]
+    student_class = request["student_class"]
     subject = request["subject"]
     lesson_datetime_str = request["lesson_datetime"]
     
@@ -658,6 +672,7 @@ async def confirm_request_handler(callback: types.CallbackQuery, bot: Bot):
     confirmed[lesson_id] = {
         "student_id": student_id,
         "student_name": student_name,
+        "student_class": student_class,
         "subject": subject,
         "lesson_datetime": lesson_datetime_str,
         "date_str": datetime.fromisoformat(lesson_datetime_str).strftime("%d.%m.%Y"),
@@ -688,14 +703,14 @@ async def confirm_request_handler(callback: types.CallbackQuery, bot: Bot):
     # Обновляем сообщение репетитора
     await callback.message.edit_text(
         f"✅ <b>Запрос подтвержден!</b>\n\n"
-        f"Ученик {student_name} был уведомлен.",
+        f"Ученик {student_name} ({student_class}) был уведомлен.",
         parse_mode="HTML"
     )
     
     await callback.answer("✅ Запрос подтвержден")
 
 async def reject_request_handler(callback: types.CallbackQuery, bot: Bot):
-    """НОВЫЙ ОБРАБОТЧИК: Репетитор отклоняет запрос"""
+    """Отклонение запроса репетитором"""
     request_id = callback.data.replace("reject_", "")
     
     pending = load_json(PENDING_FILE)
@@ -753,6 +768,150 @@ async def repeat_lesson_handler(callback: types.CallbackQuery, state: FSMContext
     
     await callback.answer()
 
+async def repeat_subject_handler(callback: types.CallbackQuery, state: FSMContext):
+    """Выбор предмета для повторного занятия"""
+    subject = callback.data.replace("subject_single_", "")
+    
+    await state.update_data(subject=subject)
+    
+    week = get_week_dates()
+    schedule = load_json(SCHEDULE_FILE)
+    if not schedule:
+        schedule = DEFAULT_SCHEDULE
+    
+    days_ru = {
+        "Monday": "Понедельник",
+        "Tuesday": "Вторник",
+        "Wednesday": "Среда",
+        "Thursday": "Четверг",
+        "Friday": "Пятница",
+        "Saturday": "Суббота"
+    }
+    
+    kb = InlineKeyboardMarkup(inline_keyboard=[])
+    
+    for day_name in ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"]:
+        times = get_available_times(day_name, schedule)
+        if times:
+            date_obj, date_str = week[day_name]
+            btn_text = f"{days_ru[day_name]}, {date_str}"
+            kb.inline_keyboard.append([
+                InlineKeyboardButton(text=btn_text, callback_data=f"repeat_time_{day_name}")
+            ])
+    
+    kb.inline_keyboard.append([
+        InlineKeyboardButton(text="⬅️ Назад", callback_data="back_to_menu")
+    ])
+    
+    await callback.message.edit_text(
+        "📅 Выберите день:",
+        reply_markup=kb
+    )
+    
+    await state.set_state(RepeatLessonStates.waiting_for_time)
+    await callback.answer()
+
+async def repeat_time_select_handler(callback: types.CallbackQuery, state: FSMContext):
+    """Выбор времени для повторного занятия"""
+    day_name = callback.data.replace("repeat_time_", "")
+    
+    schedule = load_json(SCHEDULE_FILE)
+    if not schedule:
+        schedule = DEFAULT_SCHEDULE
+    
+    times = get_available_times(day_name, schedule)
+    
+    if not times:
+        await callback.answer("❌ На этот день нет доступных времен")
+        return
+    
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=time, callback_data=f"repeat_confirm_{day_name}_{time}")] for time in times
+    ])
+    kb.inline_keyboard.append([
+        InlineKeyboardButton(text="⬅️ Вернуться", callback_data="back_to_menu")
+    ])
+    
+    await callback.message.edit_text(
+        "⏰ Выберите время:",
+        reply_markup=kb
+    )
+    
+    await callback.answer()
+
+async def repeat_confirm_handler(callback: types.CallbackQuery, state: FSMContext, bot: Bot):
+    """Подтверждение повторного занятия"""
+    parts = callback.data.split("_")
+    day_name = parts[2]
+    time_str = "_".join(parts[3:])
+    
+    data = await state.get_data()
+    subject = data.get("subject", "")
+    student_id = callback.from_user.id
+    
+    # ПОЛУЧАЕМ СОХРАНЕННЫЕ ДАННЫЕ УЧЕНИКА
+    student_info = get_student_info(student_id)
+    if not student_info:
+        await callback.answer("❌ Ошибка: данные ученика не найдены", show_alert=True)
+        return
+    
+    student_name = student_info["name"]
+    student_class = student_info["grade"]
+    
+    lesson_datetime = get_lesson_datetime(day_name, time_str)
+    
+    if not lesson_datetime:
+        await callback.answer("❌ Ошибка: не удалось определить время занятия")
+        return
+    
+    # Сохраняем запрос в pending
+    request_id = create_request_id()
+    pending = load_json(PENDING_FILE)
+    
+    pending[request_id] = {
+        "student_id": student_id,
+        "student_name": student_name,
+        "student_class": student_class,
+        "subject": subject,
+        "lesson_datetime": lesson_datetime.isoformat(),
+        "timestamp": datetime.now().isoformat(),
+        "status": "pending",
+        "type": "repeat"
+    }
+    
+    save_json(PENDING_FILE, pending)
+    
+    # Уведомляем репетитора
+    lesson_date_str = lesson_datetime.strftime("%d.%m.%Y")
+    lesson_time_str = lesson_datetime.strftime("%H:%M")
+    
+    await bot.send_message(
+        TUTOR_ID,
+        f"📋 <b>Новый запрос на повторное занятие!</b>\n\n"
+        f"👤 Ученик: {student_name}\n"
+        f"📚 Класс: {student_class}\n"
+        f"📖 Предмет: {subject}\n"
+        f"📅 Дата: {lesson_date_str}\n"
+        f"⏰ Время: {lesson_time_str}",
+        reply_markup=tutor_confirm_keyboard(request_id),
+        parse_mode="HTML"
+    )
+    
+    # Уведомляем ученика
+    await callback.message.edit_text(
+        f"✅ <b>Запрос отправлен!</b>\n\n"
+        f"Репетитор рассмотрит ваш запрос.\n"
+        f"Время занятия: <b>{lesson_date_str} {lesson_time_str}</b>\n\n"
+        f"Предмет: {subject}",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="📌 В главное меню", callback_data="back_to_menu")]
+        ]),
+        parse_mode="HTML"
+    )
+    
+    await state.clear()
+    await callback.answer()
+
 async def reschedule_lesson_handler(callback: types.CallbackQuery, state: FSMContext):
     """Запуск процесса переноса занятия"""
     lessons = get_student_lessons(callback.from_user.id)
@@ -776,6 +935,154 @@ async def reschedule_lesson_handler(callback: types.CallbackQuery, state: FSMCon
     
     await callback.answer()
 
+async def reschedule_pick_handler(callback: types.CallbackQuery, state: FSMContext):
+    """Обработчик выбора занятия для переноса"""
+    lesson_id = callback.data.replace("reschedule_pick_", "")
+    
+    confirmed = load_json(CONFIRMED_FILE)
+    if lesson_id not in confirmed:
+        await callback.answer("❌ Занятие не найдено", show_alert=True)
+        return
+    
+    lesson = confirmed[lesson_id]
+    await state.update_data(reschedule_lesson_id=lesson_id, reschedule_subject=lesson["subject"])
+    
+    week = get_week_dates()
+    schedule = load_json(SCHEDULE_FILE)
+    if not schedule:
+        schedule = DEFAULT_SCHEDULE
+    
+    days_ru = {
+        "Monday": "Понедельник",
+        "Tuesday": "Вторник",
+        "Wednesday": "Среда",
+        "Thursday": "Четверг",
+        "Friday": "Пятница",
+        "Saturday": "Суббота"
+    }
+    
+    kb = InlineKeyboardMarkup(inline_keyboard=[])
+    
+    for day_name in ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"]:
+        times = get_available_times(day_name, schedule)
+        if times:
+            date_obj, date_str = week[day_name]
+            btn_text = f"{days_ru[day_name]}, {date_str}"
+            kb.inline_keyboard.append([
+                InlineKeyboardButton(text=btn_text, callback_data=f"reschedule_day_{day_name}")
+            ])
+    
+    kb.inline_keyboard.append([
+        InlineKeyboardButton(text="⬅️ Назад", callback_data="back_to_menu")
+    ])
+    
+    await callback.message.edit_text(
+        "📅 Выберите новый день:",
+        reply_markup=kb
+    )
+    
+    await state.set_state(RescheduleStates.waiting_for_new_time)
+    await callback.answer()
+
+async def reschedule_day_handler(callback: types.CallbackQuery, state: FSMContext):
+    """Выбор дня для переноса"""
+    day_name = callback.data.replace("reschedule_day_", "")
+    
+    schedule = load_json(SCHEDULE_FILE)
+    if not schedule:
+        schedule = DEFAULT_SCHEDULE
+    
+    times = get_available_times(day_name, schedule)
+    
+    if not times:
+        await callback.answer("❌ На этот день нет доступных времен")
+        return
+    
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=time, callback_data=f"reschedule_confirm_{day_name}_{time}")] for time in times
+    ])
+    kb.inline_keyboard.append([
+        InlineKeyboardButton(text="⬅️ Назад", callback_data="back_to_menu")
+    ])
+    
+    await callback.message.edit_text(
+        "⏰ Выберите новое время:",
+        reply_markup=kb
+    )
+    
+    await callback.answer()
+
+async def reschedule_confirm_handler(callback: types.CallbackQuery, state: FSMContext, bot: Bot):
+    """Подтверждение переноса занятия"""
+    parts = callback.data.split("_")
+    day_name = parts[2]
+    time_str = "_".join(parts[3:])
+    
+    data = await state.get_data()
+    lesson_id = data.get("reschedule_lesson_id")
+    subject = data.get("reschedule_subject")
+    student_id = callback.from_user.id
+    
+    student_info = get_student_info(student_id)
+    if not student_info:
+        await callback.answer("❌ Ошибка: данные ученика не найдены", show_alert=True)
+        return
+    
+    student_name = student_info["name"]
+    student_class = student_info["grade"]
+    
+    new_lesson_datetime = get_lesson_datetime(day_name, time_str)
+    
+    if not new_lesson_datetime:
+        await callback.answer("❌ Ошибка: не удалось определить время занятия")
+        return
+    
+    # Сохраняем запрос на перенос
+    reschedule_id = create_request_id()
+    pending_reschedules = load_json(PENDING_RESCHEDULES_FILE)
+    
+    pending_reschedules[reschedule_id] = {
+        "lesson_id": lesson_id,
+        "student_id": student_id,
+        "student_name": student_name,
+        "student_class": student_class,
+        "subject": subject,
+        "new_lesson_datetime": new_lesson_datetime.isoformat(),
+        "timestamp": datetime.now().isoformat(),
+        "status": "pending"
+    }
+    
+    save_json(PENDING_RESCHEDULES_FILE, pending_reschedules)
+    
+    # Уведомляем репетитора
+    lesson_date_str = new_lesson_datetime.strftime("%d.%m.%Y")
+    lesson_time_str = new_lesson_datetime.strftime("%H:%M")
+    
+    await bot.send_message(
+        TUTOR_ID,
+        f"📍 <b>Запрос на перенос занятия!</b>\n\n"
+        f"👤 Ученик: {student_name}\n"
+        f"📚 Класс: {student_class}\n"
+        f"📖 Предмет: {subject}\n"
+        f"📅 Новая дата: {lesson_date_str}\n"
+        f"⏰ Новое время: {lesson_time_str}",
+        parse_mode="HTML"
+    )
+    
+    # Уведомляем ученика
+    await callback.message.edit_text(
+        f"✅ <b>Запрос на перенос отправлен!</b>\n\n"
+        f"Репетитор рассмотрит ваш запрос.\n"
+        f"Новое время: <b>{lesson_date_str} {lesson_time_str}</b>",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="📌 В главное меню", callback_data="back_to_menu")]
+        ]),
+        parse_mode="HTML"
+    )
+    
+    await state.clear()
+    await callback.answer()
+
 async def cancel_lesson_handler(callback: types.CallbackQuery, state: FSMContext):
     """Запуск процесса отмены занятия"""
     lessons = get_student_lessons(callback.from_user.id)
@@ -797,6 +1104,71 @@ async def cancel_lesson_handler(callback: types.CallbackQuery, state: FSMContext
         reply_markup=lessons_list_keyboard(lessons, "cancel_pick")
     )
     
+    await callback.answer()
+
+async def cancel_pick_handler(callback: types.CallbackQuery, state: FSMContext, bot: Bot):
+    """Обработчик выбора занятия для отмены"""
+    lesson_id = callback.data.replace("cancel_pick_", "")
+    
+    confirmed = load_json(CONFIRMED_FILE)
+    if lesson_id not in confirmed:
+        await callback.answer("❌ Занятие не найдено", show_alert=True)
+        return
+    
+    lesson = confirmed[lesson_id]
+    student_id = callback.from_user.id
+    
+    student_info = get_student_info(student_id)
+    if not student_info:
+        await callback.answer("❌ Ошибка: данные ученика не найдены", show_alert=True)
+        return
+    
+    student_name = student_info["name"]
+    student_class = student_info["grade"]
+    
+    # Сохраняем запрос на отмену
+    cancel_id = create_request_id()
+    pending_cancels = load_json(PENDING_CANCELS_FILE)
+    
+    pending_cancels[cancel_id] = {
+        "lesson_id": lesson_id,
+        "student_id": student_id,
+        "student_name": student_name,
+        "student_class": student_class,
+        "subject": lesson["subject"],
+        "lesson_datetime": lesson["lesson_datetime"],
+        "timestamp": datetime.now().isoformat(),
+        "status": "pending"
+    }
+    
+    save_json(PENDING_CANCELS_FILE, pending_cancels)
+    
+    # Уведомляем репетитора
+    lesson_date_str = lesson["date_str"]
+    lesson_time_str = lesson["time"]
+    
+    await bot.send_message(
+        TUTOR_ID,
+        f"❌ <b>Запрос на отмену занятия!</b>\n\n"
+        f"👤 Ученик: {student_name}\n"
+        f"📚 Класс: {student_class}\n"
+        f"📖 Предмет: {lesson['subject']}\n"
+        f"📅 Дата: {lesson_date_str}\n"
+        f"⏰ Время: {lesson_time_str}",
+        parse_mode="HTML"
+    )
+    
+    # Уведомляем ученика
+    await callback.message.edit_text(
+        f"✅ <b>Запрос на отмену отправлен!</b>\n\n"
+        f"Репетитор рассмотрит ваш запрос.",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="📌 В главное меню", callback_data="back_to_menu")]
+        ]),
+        parse_mode="HTML"
+    )
+    
+    await state.clear()
     await callback.answer()
 
 async def back_to_menu_handler(callback: types.CallbackQuery, state: FSMContext):
@@ -1168,13 +1540,19 @@ async def start_bot():
             dp.callback_query.register(my_schedule_handler, F.data == "my_schedule")
             dp.callback_query.register(back_to_menu_handler, F.data == "back_to_menu")
             dp.callback_query.register(subject_single_handler, F.data.startswith("subject_single_"))
+            dp.callback_query.register(repeat_subject_handler, F.data.startswith("subject_single_"), RepeatLessonStates.waiting_for_subject)
+            dp.callback_query.register(repeat_time_select_handler, F.data.startswith("repeat_time_"))
+            dp.callback_query.register(repeat_confirm_handler, F.data.startswith("repeat_confirm_"))
             dp.callback_query.register(time_select_handler, F.data.startswith("time_"))
             dp.callback_query.register(confirm_time_handler, F.data.startswith("confirm_time_"))
+            dp.callback_query.register(reschedule_pick_handler, F.data.startswith("reschedule_pick_"))
+            dp.callback_query.register(reschedule_day_handler, F.data.startswith("reschedule_day_"))
+            dp.callback_query.register(reschedule_confirm_handler, F.data.startswith("reschedule_confirm_"))
+            dp.callback_query.register(cancel_pick_handler, F.data.startswith("cancel_pick_"))
             dp.callback_query.register(edit_schedule_button_handler, F.data == "edit_schedule")
             dp.callback_query.register(interactive_day_select_handler, F.data.startswith("iday_"))
             dp.callback_query.register(interactive_save_handler, F.data == "isave_schedule")
             dp.callback_query.register(back_to_schedule_menu_handler, F.data == "back_to_schedule_menu")
-            # НОВЫЕ ОБРАБОТЧИКИ ДЛЯ ПОДТВЕРЖДЕНИЯ/ОТКЛОНЕНИЯ
             dp.callback_query.register(confirm_request_handler, F.data.startswith("confirm_"))
             dp.callback_query.register(reject_request_handler, F.data.startswith("reject_"))
             
@@ -1217,7 +1595,7 @@ async def start_bot():
 
 async def main():
     print("=" * 70)
-    print("INITIALIZING APPLICATION - ALL HANDLERS INCLUDED")
+    print("INITIALIZING APPLICATION - COMPLETE SYSTEM")
     print("=" * 70)
     print(f"Port: {PORT}")
     print(f"Token: {'OK' if TOKEN else 'NOT SET'}")
