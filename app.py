@@ -2,10 +2,7 @@
 
 """
 Telegram бот для управления расписанием занятий репетитора
-Адаптирован для работы на Render с HTTP сервером
-С МАКСИМАЛЬНОЙ ЗАЩИТОЙ ОТ КОНФЛИКТОВ И СИСТЕМОЙ ПОДТВЕРЖДЕНИЯ
-С KEEP-ALIVE ДЛЯ ПРЕДОТВРАЩЕНИЯ ГИБЕРНАЦИИ
-С ИНТЕРАКТИВНЫМ РЕДАКТИРОВАНИЕМ РАСПИСАНИЯ (ВАРИАНТ 2)
+ИСПРАВЛЕНА ПРОБЛЕМА: Теперь ученики могут выбирать время для занятий
 """
 
 import os
@@ -49,14 +46,10 @@ DEFAULT_SCHEDULE = {
 # ИНТЕРАКТИВНОЕ РАСПИСАНИЕ - КОНФИГУРАЦИЯ
 # ============================================================================
 
-# Длительность одного слота в минутах
 SLOT_DURATION = 60
-
-# Максимальное время (конец рабочего дня) - 21:00
 MAX_WORK_HOUR = 21
 MAX_WORK_MINUTE = 0
 
-# Дни недели на русском
 DAYS_RU = {
     "Monday": "Понедельник",
     "Tuesday": "Вторник",
@@ -364,7 +357,6 @@ def parse_time_input(text: str) -> Optional[Tuple[int, int]]:
     """Парсит ввод времени: '19:30' или '19' -> (19, 30)"""
     text = text.strip()
     
-    # Проверка на "нет" или пусто
     if text.lower() in ['нет', 'no', '-', 'skip']:
         return None
     
@@ -396,18 +388,15 @@ def generate_time_slots(start_hour: int, start_minute: int) -> List[str]:
     while True:
         current_minutes = current_hour * 60 + current_minute
         
-        # Проверяем не превышаем ли максимум
         if current_minutes > max_minutes:
             break
         
-        # Проверяем не выходим ли за границы суток
         if current_hour >= 24:
             break
         
         time_str = f"{current_hour:02d}:{current_minute:02d}"
         slots.append(time_str)
         
-        # Переходим к следующему слоту
         current_minute += SLOT_DURATION
         if current_minute >= 60:
             current_hour += current_minute // 60
@@ -583,7 +572,7 @@ async def subject_single_handler(callback: types.CallbackQuery, state: FSMContex
     await callback.answer()
 
 async def time_select_handler(callback: types.CallbackQuery, state: FSMContext):
-    """Обработчик выбора времени"""
+    """Обработчик выбора времени - ИСПРАВЛЕНО"""
     day_name = callback.data.replace("time_", "")
     
     schedule = load_json(SCHEDULE_FILE)
@@ -608,6 +597,73 @@ async def time_select_handler(callback: types.CallbackQuery, state: FSMContext):
         reply_markup=kb
     )
     
+    await callback.answer()
+
+async def confirm_time_handler(callback: types.CallbackQuery, state: FSMContext, bot: Bot):
+    """Обработчик подтверждения времени"""
+    # Парсим callback_data: confirm_time_{day_name}_{time}
+    parts = callback.data.split("_")
+    day_name = parts[2]
+    time_str = "_".join(parts[3:])  # На случай если в времени будут подчеркивания
+    
+    data = await state.get_data()
+    student_name = data.get("student_name", "Гость")
+    student_class = data.get("class_grade", "")
+    subject = data.get("subject", "")
+    student_id = callback.from_user.id
+    
+    lesson_datetime = get_lesson_datetime(day_name, time_str)
+    
+    if not lesson_datetime:
+        await callback.answer("❌ Ошибка: не удалось определить время занятия")
+        return
+    
+    # Сохраняем запрос в pending
+    request_id = create_request_id()
+    pending = load_json(PENDING_FILE)
+    
+    pending[request_id] = {
+        "student_id": student_id,
+        "student_name": student_name,
+        "student_class": student_class,
+        "subject": subject,
+        "lesson_datetime": lesson_datetime.isoformat(),
+        "timestamp": datetime.now().isoformat(),
+        "status": "pending"
+    }
+    
+    save_json(PENDING_FILE, pending)
+    
+    # Уведомляем репетитора
+    lesson_date_str = lesson_datetime.strftime("%d.%m.%Y")
+    lesson_time_str = lesson_datetime.strftime("%H:%M")
+    
+    await bot.send_message(
+        TUTOR_ID,
+        f"📋 <b>Новый запрос на занятие!</b>\n\n"
+        f"👤 Ученик: {student_name}\n"
+        f"📚 Класс: {student_class}\n"
+        f"📖 Предмет: {subject}\n"
+        f"📅 Дата: {lesson_date_str}\n"
+        f"⏰ Время: {lesson_time_str}\n\n"
+        f"Одобрить?",
+        reply_markup=tutor_confirm_keyboard(request_id),
+        parse_mode="HTML"
+    )
+    
+    # Уведомляем ученика
+    await callback.message.edit_text(
+        f"✅ <b>Запрос отправлен!</b>\n\n"
+        f"Репетитор рассмотрит ваш запрос.\n"
+        f"Время занятия: <b>{lesson_date_str} {lesson_time_str}</b>\n\n"
+        f"Предмет: {subject}",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="📌 В главное меню", callback_data="back_to_menu")]
+        ]),
+        parse_mode="HTML"
+    )
+    
+    await state.clear()
     await callback.answer()
 
 async def repeat_lesson_handler(callback: types.CallbackQuery, state: FSMContext):
@@ -759,7 +815,13 @@ async def interactive_day_select_handler(callback: types.CallbackQuery, state: F
 
 
 async def interactive_time_input_handler(message: types.Message, state: FSMContext):
-    """Обработка ввода времени"""
+    """Обработка ввода времени ДЛЯ РАСПИСАНИЯ (ТОЛЬКО)"""
+    
+    # Проверяем что мы в состоянии редактирования расписания
+    current_state = await state.get_state()
+    if current_state != InteractiveScheduleStates.waiting_for_start_time:
+        # Это не для расписания, игнорируем
+        return
     
     data = await state.get_data()
     day_name = data.get("current_day")
@@ -1045,6 +1107,7 @@ async def start_bot():
             dp.message.register(menu_button_handler, F.text == "☰ Меню")
             dp.message.register(first_lesson_name_handler, FirstLessonStates.waiting_for_name)
             dp.message.register(first_lesson_class_handler, FirstLessonStates.waiting_for_class)
+            # ИСПРАВКА: Проверяем состояние перед обработкой
             dp.message.register(interactive_time_input_handler, InteractiveScheduleStates.waiting_for_start_time)
             
             dp.callback_query.register(first_lesson_handler, F.data == "first_lesson")
@@ -1055,6 +1118,7 @@ async def start_bot():
             dp.callback_query.register(back_to_menu_handler, F.data == "back_to_menu")
             dp.callback_query.register(subject_single_handler, F.data.startswith("subject_single_"))
             dp.callback_query.register(time_select_handler, F.data.startswith("time_"))
+            dp.callback_query.register(confirm_time_handler, F.data.startswith("confirm_time_"))
             dp.callback_query.register(edit_schedule_button_handler, F.data == "edit_schedule")
             dp.callback_query.register(interactive_day_select_handler, F.data.startswith("iday_"))
             dp.callback_query.register(interactive_save_handler, F.data == "isave_schedule")
