@@ -4,6 +4,7 @@
 Telegram бот для управления расписанием занятий репетитора
 ПОЛНАЯ СИСТЕМА: все функции работают, все данные ученика сохраняются
 ИСПРАВЛЕНО: данные сохраняются ТОЛЬКО после подтверждения репетитором
+ДОПОЛНИТЕЛЬНОЕ ИСПРАВЛЕНИЕ: отображение имени и класса везде
 """
 
 import os
@@ -681,7 +682,13 @@ async def reject_request_handler(callback: types.CallbackQuery, bot: Bot):
     await callback.answer("❌ Запрос отклонен")
 
 async def repeat_lesson_handler(callback: types.CallbackQuery, state: FSMContext):
-    lessons = get_student_lessons(callback.from_user.id)
+    student_id = callback.from_user.id
+    lessons = get_student_lessons(student_id)
+    
+    # ✅ ИСПРАВЛЕНО: Проверяем, есть ли данные ученика ДО вывода сообщения
+    student_info = get_student_info(student_id)
+    if not student_info:
+        print(f"⚠️ ОШИБКА: При попытке повторного занятия данные не найдены для ID {student_id}")
     
     if not lessons:
         await callback.message.edit_text(
@@ -769,11 +776,13 @@ async def repeat_confirm_handler(callback: types.CallbackQuery, state: FSMContex
     # ✅ ИСПРАВЛЕНО: ПОЛУЧАЕМ СОХРАНЕННЫЕ ДАННЫЕ УЧЕНИКА
     student_info = get_student_info(student_id)
     if not student_info:
+        print(f"❌ КРИТИЧЕСКАЯ ОШИБКА: Данные ученика не найдены при повторном занятии - ID: {student_id}")
         await callback.answer("❌ Ошибка: данные ученика не найдены. Пожалуйста, сначала запишитесь на первое занятие!", show_alert=True)
         return
     
     student_name = student_info["name"]
     student_class = student_info["grade"]
+    print(f"✅ Загружены данные для повторного занятия: {student_name} ({student_class}) - ID: {student_id}")
     
     lesson_datetime = get_lesson_datetime(day_name, time_str)
     
@@ -928,11 +937,12 @@ async def reschedule_confirm_handler(callback: types.CallbackQuery, state: FSMCo
         lesson = confirmed.get(lesson_id, {})
         student_name = lesson.get("student_name", "Ученик")
         student_class = lesson.get("student_class", "")
-        print(f"⚠️ ВНИМАНИЕ: данные {student_id} не в students.json, но есть в занятии: {student_name} ({student_class})")
+        print(f"⚠️ ВНИМАНИЕ: данные {student_id} не в students.json, восстанавливаю из lessons: {student_name} ({student_class})")
         save_student_info(student_id, student_name, student_class)
     else:
         student_name = student_info["name"]
         student_class = student_info["grade"]
+        print(f"✅ Загружены данные для переноса: {student_name} ({student_class}) - ID: {student_id}")
     
     new_lesson_datetime = get_lesson_datetime(day_name, time_str)
     
@@ -955,7 +965,7 @@ async def reschedule_confirm_handler(callback: types.CallbackQuery, state: FSMCo
     }
     
     save_json(PENDING_RESCHEDULES_FILE, pending_reschedules)
-    print(f"📝 Создан запрос на перенос занятия: {reschedule_id} - {student_name}")
+    print(f"📝 Создан запрос на перенос занятия: {reschedule_id} - {student_name} ({student_class})")
     
     lesson_date_str = new_lesson_datetime.strftime("%d.%m.%Y")
     lesson_time_str = new_lesson_datetime.strftime("%H:%M")
@@ -1001,6 +1011,9 @@ async def confirm_reschedule_handler(callback: types.CallbackQuery, bot: Bot):
     subject = reschedule["subject"]
     new_datetime_str = reschedule["new_lesson_datetime"]
     
+    # ✅ ИСПРАВЛЕНО: Убеждаемся, что данные сохранены перед обновлением
+    save_student_info(student_id, student_name, student_class)
+    
     confirmed = load_json(CONFIRMED_FILE)
     if lesson_id in confirmed:
         confirmed[lesson_id]["lesson_datetime"] = new_datetime_str
@@ -1011,7 +1024,7 @@ async def confirm_reschedule_handler(callback: types.CallbackQuery, bot: Bot):
     
     del pending_reschedules[reschedule_id]
     save_json(PENDING_RESCHEDULES_FILE, pending_reschedules)
-    print(f"✅ Перенос занятия подтвержден: {reschedule_id} - {student_name}")
+    print(f"✅ Перенос занятия подтвержден: {reschedule_id} - {student_name} ({student_class})")
     
     new_datetime = datetime.fromisoformat(new_datetime_str)
     date_str = new_datetime.strftime("%d.%m.%Y")
@@ -1020,6 +1033,8 @@ async def confirm_reschedule_handler(callback: types.CallbackQuery, bot: Bot):
     await bot.send_message(
         student_id,
         f"✅ Ваш запрос на перенос подтвержден!\n\n"
+        f"👤 Ученик: {student_name}\n"
+        f"📚 Класс: {student_class}\n"
         f"📅 Новая дата: {date_str}\n"
         f"⏰ Новое время: {time_str}\n"
         f"📖 Предмет: {subject}",
@@ -1101,7 +1116,7 @@ async def cancel_pick_handler(callback: types.CallbackQuery, state: FSMContext, 
     if not student_info:
         student_name = lesson.get("student_name", "Ученик")
         student_class = lesson.get("student_class", "")
-        print(f"⚠️ ВНИМАНИЕ: данные {student_id} не в students.json, но есть в занятии: {student_name} ({student_class})")
+        print(f"⚠️ ВНИМАНИЕ: данные {student_id} не в students.json, восстанавливаю из lessons: {student_name} ({student_class})")
         save_student_info(student_id, student_name, student_class)
     else:
         student_name = student_info["name"]
@@ -1621,7 +1636,7 @@ async def start_bot():
 
 async def main():
     print("=" * 70)
-    print("INITIALIZING APPLICATION - COMPLETE SYSTEM (FULLY FIXED)")
+    print("INITIALIZING APPLICATION - COMPLETE SYSTEM (FULLY FIXED v2)")
     print("=" * 70)
     print(f"Port: {PORT}")
     print(f"Token: {'OK' if TOKEN else 'NOT SET'}")
@@ -1678,3 +1693,4 @@ if __name__ == "__main__":
         print(f"ERROR: Main thread error: {e}")
         import traceback
         traceback.print_exc()
+
