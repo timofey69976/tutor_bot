@@ -5,6 +5,7 @@ Telegram бот для управления расписанием заняти�
 Адаптирован для работы на Render с HTTP сервером
 С МАКСИМАЛЬНОЙ ЗАЩИТОЙ ОТ КОНФЛИКТОВ И СИСТЕМОЙ ПОДТВЕРЖДЕНИЯ
 С KEEP-ALIVE ДЛЯ ПРЕДОТВРАЩЕНИЯ ГИБЕРНАЦИИ
+С ИНТЕРАКТИВНЫМ РЕДАКТИРОВАНИЕМ РАСПИСАНИЯ (ВАРИАНТ 2)
 """
 
 import os
@@ -36,12 +37,42 @@ if not TOKEN:
 TUTOR_ID = 1339816111
 SUBJECTS = ["Математика", "Физика", "Химия"]
 DEFAULT_SCHEDULE = {
-    "Monday": [f"{h}:30" for h in range(19, 21)],
+    "Monday": [f"{h}:00" for h in range(18, 21)],
     "Tuesday": [f"{h}:30" for h in range(19, 21)],
     "Wednesday": [],
-    "Thursday": ["18:15", "19:15", "20:15", "21:15"],
+    "Thursday": ["18:15", "19:15", "20:15"],
     "Friday": [],
     "Saturday": [f"{h}:30" for h in range(16, 21)]
+}
+
+# ============================================================================
+# ИНТЕРАКТИВНОЕ РАСПИСАНИЕ - КОНФИГУРАЦИЯ
+# ============================================================================
+
+# Длительность одного слота в минутах
+SLOT_DURATION = 60
+
+# Максимальное время (конец рабочего дня) - 21:00
+MAX_WORK_HOUR = 21
+MAX_WORK_MINUTE = 0
+
+# Дни недели на русском
+DAYS_RU = {
+    "Monday": "Понедельник",
+    "Tuesday": "Вторник",
+    "Wednesday": "Среда",
+    "Thursday": "Четверг",
+    "Friday": "Пятница",
+    "Saturday": "Суббота"
+}
+
+DAYS_EMOJI = {
+    "Monday": "📅",
+    "Tuesday": "📅",
+    "Wednesday": "📅",
+    "Thursday": "📅",
+    "Friday": "📅",
+    "Saturday": "📅"
 }
 
 # ============================================================================
@@ -115,6 +146,12 @@ class CancelLessonStates(StatesGroup):
 
 class MyScheduleStates(StatesGroup):
     viewing_schedule = State()
+
+class InteractiveScheduleStates(StatesGroup):
+    choosing_day = State()
+    waiting_for_start_time = State()
+    editing_day = State()
+    confirming_all = State()
 
 # ============================================================================
 # КЛАВИАТУРЫ
@@ -323,6 +360,81 @@ def format_tutor_schedule_message(lessons: Dict) -> str:
     
     return message
 
+def parse_time_input(text: str) -> Optional[Tuple[int, int]]:
+    """Парсит ввод времени: '19:30' или '19' -> (19, 30)"""
+    text = text.strip()
+    
+    # Проверка на "нет" или пусто
+    if text.lower() in ['нет', 'no', '-', 'skip']:
+        return None
+    
+    try:
+        if ':' in text:
+            parts = text.split(':')
+            h = int(parts[0])
+            m = int(parts[1]) if len(parts) > 1 else 0
+        else:
+            h = int(text)
+            m = 0
+        
+        if 0 <= h < 24 and 0 <= m < 60:
+            return (h, m)
+    except:
+        pass
+    
+    return "invalid"
+
+
+def generate_time_slots(start_hour: int, start_minute: int) -> List[str]:
+    """Генерирует слоты на основе времени начала"""
+    slots = []
+    current_hour = start_hour
+    current_minute = start_minute
+    
+    max_minutes = MAX_WORK_HOUR * 60 + MAX_WORK_MINUTE
+    
+    while True:
+        current_minutes = current_hour * 60 + current_minute
+        
+        # Проверяем не превышаем ли максимум
+        if current_minutes > max_minutes:
+            break
+        
+        # Проверяем не выходим ли за границы суток
+        if current_hour >= 24:
+            break
+        
+        time_str = f"{current_hour:02d}:{current_minute:02d}"
+        slots.append(time_str)
+        
+        # Переходим к следующему слоту
+        current_minute += SLOT_DURATION
+        if current_minute >= 60:
+            current_hour += current_minute // 60
+            current_minute = current_minute % 60
+    
+    return slots
+
+
+def format_schedule_for_preview(schedule_dict: Dict) -> str:
+    """Форматирует расписание для предпросмотра"""
+    message = "📋 <b>Ваше расписание:</b>\n\n"
+    
+    for day_name in ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"]:
+        day_ru = DAYS_RU.get(day_name, day_name)
+        times = schedule_dict.get(day_name, [])
+        
+        if isinstance(times, str) and times == "нет":
+            times_str = "❌ нет занятий"
+        elif times:
+            times_str = ", ".join(times)
+        else:
+            times_str = "⏳ не установлено"
+        
+        message += f"{DAYS_EMOJI[day_name]} <b>{day_ru}:</b> {times_str}\n"
+    
+    return message
+
 # ============================================================================
 # ОБРАБОТЧИКИ СООБЩЕНИЙ
 # ============================================================================
@@ -363,11 +475,9 @@ async def my_schedule_handler(callback: types.CallbackQuery, state: FSMContext):
     await state.set_state(MyScheduleStates.viewing_schedule)
     
     if user_id == TUTOR_ID:
-        # Для репетитора показываем его расписание
         lessons = get_tutor_lessons()
         message_text = format_tutor_schedule_message(lessons)
     else:
-        # Для ученика показываем его расписание
         lessons = get_student_lessons(user_id)
         message_text = format_student_schedule_message(lessons)
     
@@ -583,37 +693,189 @@ async def back_to_menu_handler(callback: types.CallbackQuery, state: FSMContext)
     await callback.answer()
 
 async def edit_schedule_button_handler(callback: types.CallbackQuery, state: FSMContext):
-    """Обработчик кнопки 'Изменить расписание'"""
-    await callback.message.edit_text(
-        "📝 Отправьте JSON с расписанием в формате:\n"
-        '{"Monday": ["18:00", "19:00"], ...}',
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="❌ Отменить", callback_data="back_to_menu")]
-        ])
+    """Запуск интерактивного редактирования расписания"""
+    
+    # Инициализируем расписание
+    current_schedule = load_json(SCHEDULE_FILE) or DEFAULT_SCHEDULE
+    
+    await state.update_data(
+        interactive_schedule=current_schedule.copy(),
+        edited_days=[]
     )
     
-    await state.set_state(TutorScheduleStates.waiting_for_schedule_json)
+    # Создаем клавиатуру с днями
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="Пн", callback_data="iday_Monday"),
+            InlineKeyboardButton(text="Вт", callback_data="iday_Tuesday"),
+            InlineKeyboardButton(text="Ср", callback_data="iday_Wednesday"),
+        ],
+        [
+            InlineKeyboardButton(text="Чт", callback_data="iday_Thursday"),
+            InlineKeyboardButton(text="Пт", callback_data="iday_Friday"),
+            InlineKeyboardButton(text="Сб", callback_data="iday_Saturday"),
+        ],
+        [
+            InlineKeyboardButton(text="✅ Сохранить расписание", callback_data="isave_schedule"),
+            InlineKeyboardButton(text="❌ Отмена", callback_data="back_to_menu"),
+        ]
+    ])
+    
+    await callback.message.edit_text(
+        "🛠 <b>Интерактивное редактирование расписания</b>\n\n"
+        "Выберите день недели для редактирования:",
+        reply_markup=kb,
+        parse_mode="HTML"
+    )
+    
+    await state.set_state(InteractiveScheduleStates.choosing_day)
     await callback.answer()
 
-async def schedule_json_handler(message: types.Message, state: FSMContext):
-    """Обработчик JSON расписания"""
-    try:
-        schedule = json.loads(message.text)
-        
-        if not isinstance(schedule, dict):
-            await message.answer("❌ Расписание должно быть объектом JSON")
-            return
-        
-        save_json(SCHEDULE_FILE, schedule)
-        
+
+async def interactive_day_select_handler(callback: types.CallbackQuery, state: FSMContext):
+    """Выбор дня для редактирования"""
+    
+    day_name = callback.data.replace("iday_", "")
+    day_ru = DAYS_RU.get(day_name, day_name)
+    
+    await state.update_data(current_day=day_name)
+    
+    await callback.message.edit_text(
+        f"📅 <b>{day_ru}</b>\n\n"
+        f"Когда вы можете начать занятия в {day_ru}?\n\n"
+        "<code>Примеры:</code>\n"
+        "• <code>19:30</code> — начало в 19:30\n"
+        "• <code>18</code> — начало в 18:00\n"
+        "• <code>нет</code> — нет занятий в этот день\n\n"
+        f"<i>Бот автоматически создаст слоты по 1 часу (до {MAX_WORK_HOUR}:00)</i>",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data="back_to_schedule_menu")]
+        ]),
+        parse_mode="HTML"
+    )
+    
+    await state.set_state(InteractiveScheduleStates.waiting_for_start_time)
+    await callback.answer()
+
+
+async def interactive_time_input_handler(message: types.Message, state: FSMContext):
+    """Обработка ввода времени"""
+    
+    data = await state.get_data()
+    day_name = data.get("current_day")
+    day_ru = DAYS_RU.get(day_name, day_name)
+    interactive_schedule = data.get("interactive_schedule", {})
+    
+    if not day_name:
+        await message.answer("❌ Ошибка: день не выбран")
+        return
+    
+    time_input = parse_time_input(message.text)
+    
+    if time_input == "invalid":
         await message.answer(
-            "✅ Расписание успешно обновлено!",
-            reply_markup=main_menu_keyboard(TUTOR_ID)
+            "❌ Неверный формат времени.\n"
+            "Используйте: 19:30 или 19 или нет"
         )
-        
-        await state.clear()
-    except json.JSONDecodeError:
-        await message.answer("❌ Неверный формат JSON. Попробуйте еще раз.")
+        return
+    
+    if time_input is None:
+        # Пользователь ввел "нет"
+        interactive_schedule[day_name] = []
+        message_text = f"✅ <b>{day_ru}:</b> нет занятий"
+    else:
+        # Генерируем слоты
+        start_h, start_m = time_input
+        slots = generate_time_slots(start_h, start_m)
+        interactive_schedule[day_name] = slots
+        slots_str = ", ".join(slots)
+        message_text = f"✅ <b>{day_ru}:</b>\n{slots_str}\n\n(автоматически созданы слоты по 1 часу)"
+    
+    await state.update_data(interactive_schedule=interactive_schedule)
+    
+    # Создаем клавиатуру для следующего шага
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="Пн", callback_data="iday_Monday"),
+            InlineKeyboardButton(text="Вт", callback_data="iday_Tuesday"),
+            InlineKeyboardButton(text="Ср", callback_data="iday_Wednesday"),
+        ],
+        [
+            InlineKeyboardButton(text="Чт", callback_data="iday_Thursday"),
+            InlineKeyboardButton(text="Пт", callback_data="iday_Friday"),
+            InlineKeyboardButton(text="Сб", callback_data="iday_Saturday"),
+        ],
+        [
+            InlineKeyboardButton(text="✅ Сохранить расписание", callback_data="isave_schedule"),
+            InlineKeyboardButton(text="❌ Отмена", callback_data="back_to_menu"),
+        ]
+    ])
+    
+    await message.answer(
+        message_text + "\n\n" + format_schedule_for_preview(interactive_schedule),
+        reply_markup=kb,
+        parse_mode="HTML"
+    )
+    
+    await state.set_state(InteractiveScheduleStates.choosing_day)
+
+
+async def interactive_save_handler(callback: types.CallbackQuery, state: FSMContext):
+    """Сохранение расписания"""
+    
+    data = await state.get_data()
+    interactive_schedule = data.get("interactive_schedule", {})
+    
+    # Сохраняем в файл
+    save_json(SCHEDULE_FILE, interactive_schedule)
+    
+    preview = format_schedule_for_preview(interactive_schedule)
+    
+    await callback.message.edit_text(
+        "✅ <b>Расписание успешно обновлено!</b>\n\n" + preview,
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="📌 В главное меню", callback_data="back_to_menu")]
+        ]),
+        parse_mode="HTML"
+    )
+    
+    await state.clear()
+    await callback.answer()
+
+
+async def back_to_schedule_menu_handler(callback: types.CallbackQuery, state: FSMContext):
+    """Возврат в меню редактирования"""
+    
+    data = await state.get_data()
+    interactive_schedule = data.get("interactive_schedule", {})
+    
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="Пн", callback_data="iday_Monday"),
+            InlineKeyboardButton(text="Вт", callback_data="iday_Tuesday"),
+            InlineKeyboardButton(text="Ср", callback_data="iday_Wednesday"),
+        ],
+        [
+            InlineKeyboardButton(text="Чт", callback_data="iday_Thursday"),
+            InlineKeyboardButton(text="Пт", callback_data="iday_Friday"),
+            InlineKeyboardButton(text="Сб", callback_data="iday_Saturday"),
+        ],
+        [
+            InlineKeyboardButton(text="✅ Сохранить расписание", callback_data="isave_schedule"),
+            InlineKeyboardButton(text="❌ Отмена", callback_data="back_to_menu"),
+        ]
+    ])
+    
+    await callback.message.edit_text(
+        "🛠 <b>Интерактивное редактирование расписания</b>\n\n"
+        "Выберите день недели для редактирования:\n\n"
+        + format_schedule_for_preview(interactive_schedule),
+        reply_markup=kb,
+        parse_mode="HTML"
+    )
+    
+    await state.set_state(InteractiveScheduleStates.choosing_day)
+    await callback.answer()
 
 # ============================================================================
 # ЗАДАЧИ (SEND_REMINDERS, ETC)
@@ -783,7 +1045,7 @@ async def start_bot():
             dp.message.register(menu_button_handler, F.text == "☰ Меню")
             dp.message.register(first_lesson_name_handler, FirstLessonStates.waiting_for_name)
             dp.message.register(first_lesson_class_handler, FirstLessonStates.waiting_for_class)
-            dp.message.register(schedule_json_handler, TutorScheduleStates.waiting_for_schedule_json)
+            dp.message.register(interactive_time_input_handler, InteractiveScheduleStates.waiting_for_start_time)
             
             dp.callback_query.register(first_lesson_handler, F.data == "first_lesson")
             dp.callback_query.register(repeat_lesson_handler, F.data == "repeat_lesson")
@@ -794,6 +1056,9 @@ async def start_bot():
             dp.callback_query.register(subject_single_handler, F.data.startswith("subject_single_"))
             dp.callback_query.register(time_select_handler, F.data.startswith("time_"))
             dp.callback_query.register(edit_schedule_button_handler, F.data == "edit_schedule")
+            dp.callback_query.register(interactive_day_select_handler, F.data.startswith("iday_"))
+            dp.callback_query.register(interactive_save_handler, F.data == "isave_schedule")
+            dp.callback_query.register(back_to_schedule_menu_handler, F.data == "back_to_schedule_menu")
             
             print("OK: Handlers registered")
             print("Waiting for messages from Telegram...\n")
@@ -840,6 +1105,8 @@ async def main():
     print(f"Port: {PORT}")
     print(f"Token: {'OK' if TOKEN else 'NOT SET'}")
     print(f"Render URL: {RENDER_URL if RENDER_URL else 'NOT SET (keep-alive disabled)'}")
+    print(f"Max work hour: {MAX_WORK_HOUR}:00")
+    print(f"Slot duration: {SLOT_DURATION} минут")
     print("=" * 70 + "\n")
     sys.stdout.flush()
     
