@@ -5,6 +5,7 @@ Telegram бот для управления расписанием заняти�
 ПОЛНАЯ СИСТЕМА: все функции работают, все данные ученика сохраняются
 ИСПРАВЛЕНО: данные сохраняются ТОЛЬКО после подтверждения репетитором
 ДОПОЛНИТЕЛЬНОЕ ИСПРАВЛЕНИЕ: отображение имени и класса везде
+ФИНАЛЬНОЕ ИСПРАВЛЕНИЕ v3: Многоуровневое кеширование данных ученика
 """
 
 import os
@@ -66,6 +67,9 @@ PENDING_FILE = DATA_DIR / "pending_requests.json"
 CONFIRMED_FILE = DATA_DIR / "confirmed_lessons.json"
 PENDING_RESCHEDULES_FILE = DATA_DIR / "pending_reschedules.json"
 PENDING_CANCELS_FILE = DATA_DIR / "pending_cancels.json"
+
+# ✅ НОВОЕ: Глобальный кеш студентов в памяти
+STUDENT_CACHE = {}
 
 def load_json(filepath):
     if filepath.exists():
@@ -189,7 +193,7 @@ def lessons_list_keyboard(lessons: Dict, action_type: str = "reschedule"):
     return kb
 
 # ============================================================================
-# ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
+# ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ - МНОГОУРОВНЕВОЕ КЕШИРОВАНИЕ
 # ============================================================================
 
 def get_week_dates(start_date: datetime = None) -> Dict:
@@ -263,22 +267,72 @@ def get_tutor_lessons() -> Dict:
     
     return tutor_lessons
 
-def save_student_info(student_id: int, name: str, grade: str):
-    """✅ ИСПРАВЛЕНО: сохраняет информацию ученика в файл"""
+# ✅ НОВОЕ: Многоуровневое кеширование данных ученика
+def cache_student_info(student_id: int, name: str, grade: str):
+    """Кешировать данные в памяти + сохранить в файл"""
+    STUDENT_CACHE[student_id] = {"name": name, "grade": grade}
     students = load_json(STUDENTS_FILE)
     students[str(student_id)] = {"name": name, "grade": grade}
     save_json(STUDENTS_FILE, students)
-    print(f"✅ Сохранена информация ученика: {name} ({grade}) - ID: {student_id}")
+    print(f"✅ Кешировано и сохранено: {name} ({grade}) - ID: {student_id}")
+
+def get_student_info_from_any_source(student_id: int) -> Optional[Dict]:
+    """
+    Получить данные ученика из ЛЮБОГО источника по приоритету:
+    1. Кеш в памяти
+    2. students.json файл
+    3. confirmed lessons (уже подтвержденные занятия)
+    4. pending requests (ожидающие подтверждения)
+    """
+    
+    # Вариант 1: Кеш в памяти
+    if student_id in STUDENT_CACHE:
+        info = STUDENT_CACHE[student_id]
+        print(f"✅ Найдено в памяти: {info['name']} ({info['grade']}) - ID: {student_id}")
+        return info
+    
+    # Вариант 2: students.json файл
+    students = load_json(STUDENTS_FILE)
+    if str(student_id) in students:
+        info = students[str(student_id)]
+        STUDENT_CACHE[student_id] = info  # Добавить в кеш
+        print(f"✅ Найдено в students.json: {info['name']} ({info['grade']}) - ID: {student_id}")
+        return info
+    
+    # Вариант 3: Из confirmed lessons (уже подтвержденные)
+    confirmed = load_json(CONFIRMED_FILE)
+    for lesson_id, lesson in confirmed.items():
+        if lesson.get("student_id") == student_id:
+            name = lesson.get("student_name", "")
+            grade = lesson.get("student_class", "")
+            if name and grade:
+                info = {"name": name, "grade": grade}
+                cache_student_info(student_id, name, grade)  # Сохранить для будущего
+                print(f"✅ Восстановлено из confirmed lessons: {name} ({grade}) - ID: {student_id}")
+                return info
+    
+    # Вариант 4: Из pending requests (ожидающие подтверждения)
+    pending = load_json(PENDING_FILE)
+    for req_id, req in pending.items():
+        if req.get("student_id") == student_id:
+            name = req.get("student_name", "")
+            grade = req.get("student_class", "")
+            if name and grade:
+                info = {"name": name, "grade": grade}
+                cache_student_info(student_id, name, grade)  # Сохранить для будущего
+                print(f"✅ Восстановлено из pending requests: {name} ({grade}) - ID: {student_id}")
+                return info
+    
+    print(f"❌ Информация ученика не найдена: ID: {student_id}")
+    return None
+
+def save_student_info(student_id: int, name: str, grade: str):
+    """Сохранить данные ученика везде"""
+    cache_student_info(student_id, name, grade)
 
 def get_student_info(student_id: int) -> Optional[Dict]:
-    """✅ ИСПРАВЛЕНО: получает информацию ученика из файла"""
-    students = load_json(STUDENTS_FILE)
-    student_info = students.get(str(student_id))
-    if student_info:
-        print(f"✅ Найдена информация ученика: {student_info['name']} ({student_info['grade']}) - ID: {student_id}")
-    else:
-        print(f"❌ Информация ученика не найдена - ID: {student_id}")
-    return student_info
+    """Получить данные ученика"""
+    return get_student_info_from_any_source(student_id)
 
 def format_student_schedule_message(lessons: Dict) -> str:
     if not lessons:
@@ -542,7 +596,9 @@ async def confirm_time_handler(callback: types.CallbackQuery, state: FSMContext,
         await callback.answer("❌ Ошибка: не удалось определить время занятия")
         return
     
-    # ✅ ИСПРАВЛЕНО: Не сохраняем данные сейчас - только в pending
+    # ✅ НОВОЕ: Сохраняем данные ученика СРАЗУ в кеш перед отправкой запроса
+    cache_student_info(student_id, student_name, student_class)
+    
     request_id = create_request_id()
     pending = load_json(PENDING_FILE)
     
@@ -603,8 +659,8 @@ async def confirm_request_handler(callback: types.CallbackQuery, bot: Bot):
     subject = request["subject"]
     lesson_datetime_str = request["lesson_datetime"]
     
-    # ✅ ИСПРАВЛЕНО: СОХРАНЯЕМ ДАННЫЕ УЧЕНИКА ТОЛЬКО ПОСЛЕ ПОДТВЕРЖДЕНИЯ РЕПЕТИТОРОМ
-    save_student_info(student_id, student_name, student_class)
+    # ✅ ИСПРАВЛЕНО: СОХРАНЯЕМ ДАННЫЕ УЧЕНИКА И В КЕШ И В ФАЙЛ
+    cache_student_info(student_id, student_name, student_class)
     
     confirmed = load_json(CONFIRMED_FILE)
     lesson_id = create_request_id()
@@ -685,10 +741,16 @@ async def repeat_lesson_handler(callback: types.CallbackQuery, state: FSMContext
     student_id = callback.from_user.id
     lessons = get_student_lessons(student_id)
     
-    # ✅ ИСПРАВЛЕНО: Проверяем, есть ли данные ученика ДО вывода сообщения
-    student_info = get_student_info(student_id)
+    # ✅ НОВОЕ: Используем многоуровневое восстановление данных
+    student_info = get_student_info_from_any_source(student_id)
     if not student_info:
         print(f"⚠️ ОШИБКА: При попытке повторного занятия данные не найдены для ID {student_id}")
+    else:
+        # Сохраняем в FSM для использования в следующих шагах
+        await state.update_data(
+            student_name=student_info["name"],
+            class_grade=student_info["grade"]
+        )
     
     if not lessons:
         await callback.message.edit_text(
@@ -773,8 +835,9 @@ async def repeat_confirm_handler(callback: types.CallbackQuery, state: FSMContex
     subject = data.get("subject", "")
     student_id = callback.from_user.id
     
-    # ✅ ИСПРАВЛЕНО: ПОЛУЧАЕМ СОХРАНЕННЫЕ ДАННЫЕ УЧЕНИКА
-    student_info = get_student_info(student_id)
+    # ✅ НОВОЕ: Получаем данные из FSM (сохранили в repeat_lesson_handler)
+    # Или восстанавливаем из многоуровневого источника
+    student_info = get_student_info_from_any_source(student_id)
     if not student_info:
         print(f"❌ КРИТИЧЕСКАЯ ОШИБКА: Данные ученика не найдены при повторном занятии - ID: {student_id}")
         await callback.answer("❌ Ошибка: данные ученика не найдены. Пожалуйста, сначала запишитесь на первое занятие!", show_alert=True)
@@ -930,15 +993,15 @@ async def reschedule_confirm_handler(callback: types.CallbackQuery, state: FSMCo
     subject = data.get("reschedule_subject")
     student_id = callback.from_user.id
     
-    # ✅ ИСПРАВЛЕНО: ПОЛУЧАЕМ СОХРАНЕННЫЕ ДАННЫЕ УЧЕНИКА
-    student_info = get_student_info(student_id)
+    # ✅ НОВОЕ: Используем многоуровневое восстановление данных
+    student_info = get_student_info_from_any_source(student_id)
     if not student_info:
         confirmed = load_json(CONFIRMED_FILE)
         lesson = confirmed.get(lesson_id, {})
         student_name = lesson.get("student_name", "Ученик")
         student_class = lesson.get("student_class", "")
-        print(f"⚠️ ВНИМАНИЕ: данные {student_id} не в students.json, восстанавливаю из lessons: {student_name} ({student_class})")
-        save_student_info(student_id, student_name, student_class)
+        print(f"⚠️ ВНИМАНИЕ: данные {student_id} восстановлены из lessons: {student_name} ({student_class})")
+        cache_student_info(student_id, student_name, student_class)
     else:
         student_name = student_info["name"]
         student_class = student_info["grade"]
@@ -1012,7 +1075,7 @@ async def confirm_reschedule_handler(callback: types.CallbackQuery, bot: Bot):
     new_datetime_str = reschedule["new_lesson_datetime"]
     
     # ✅ ИСПРАВЛЕНО: Убеждаемся, что данные сохранены перед обновлением
-    save_student_info(student_id, student_name, student_class)
+    cache_student_info(student_id, student_name, student_class)
     
     confirmed = load_json(CONFIRMED_FILE)
     if lesson_id in confirmed:
@@ -1111,13 +1174,13 @@ async def cancel_pick_handler(callback: types.CallbackQuery, state: FSMContext, 
     lesson = confirmed[lesson_id]
     student_id = callback.from_user.id
     
-    # ✅ ИСПРАВЛЕНО: ПОЛУЧАЕМ СОХРАНЕННЫЕ ДАННЫЕ УЧЕНИКА
-    student_info = get_student_info(student_id)
+    # ✅ НОВОЕ: Используем многоуровневое восстановление данных
+    student_info = get_student_info_from_any_source(student_id)
     if not student_info:
         student_name = lesson.get("student_name", "Ученик")
         student_class = lesson.get("student_class", "")
-        print(f"⚠️ ВНИМАНИЕ: данные {student_id} не в students.json, восстанавливаю из lessons: {student_name} ({student_class})")
-        save_student_info(student_id, student_name, student_class)
+        print(f"⚠️ ВНИМАНИЕ: данные {student_id} восстановлены из lessons: {student_name} ({student_class})")
+        cache_student_info(student_id, student_name, student_class)
     else:
         student_name = student_info["name"]
         student_class = student_info["grade"]
@@ -1636,7 +1699,8 @@ async def start_bot():
 
 async def main():
     print("=" * 70)
-    print("INITIALIZING APPLICATION - COMPLETE SYSTEM (FULLY FIXED v2)")
+    print("INITIALIZING APPLICATION - COMPLETE SYSTEM (FULLY FIXED v3)")
+    print("МНОГОУРОВНЕВОЕ КЕШИРОВАНИЕ ДАННЫХ УЧЕНИКА")
     print("=" * 70)
     print(f"Port: {PORT}")
     print(f"Token: {'OK' if TOKEN else 'NOT SET'}")
