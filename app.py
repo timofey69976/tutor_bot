@@ -5,7 +5,7 @@ Telegram бот для управления расписанием заняти�
 ПОЛНАЯ СИСТЕМА: все функции работают, все данные ученика сохраняются
 ИСПРАВЛЕНО: данные сохраняются ТОЛЬКО после подтверждения репетитором
 ДОПОЛНИТЕЛЬНОЕ ИСПРАВЛЕНИЕ: отображение имени и класса везде
-ФИНАЛЬНОЕ ИСПРАВЛЕНИЕ v3: Многоуровневое кеширование данных ученика
+ФИНАЛЬНОЕ ИСПРАВЛЕНИЕ v4: Полная переработка системы кеширования и FSM + ИСПРАВЛЕНИЕ расписания
 """
 
 import os
@@ -72,16 +72,25 @@ PENDING_CANCELS_FILE = DATA_DIR / "pending_cancels.json"
 STUDENT_CACHE = {}
 
 def load_json(filepath):
-    if filepath.exists():
-        with open(filepath, 'r', encoding='utf-8') as f:
-            return json.load(f)
+    """Безопасная загрузка JSON файла"""
+    try:
+        if filepath.exists():
+            with open(filepath, 'r', encoding='utf-8') as f:
+                return json.load(f)
+    except Exception as e:
+        print(f"⚠️ Ошибка при загрузке {filepath}: {e}")
     return {}
 
 def save_json(filepath, data):
-    with open(filepath, 'w', encoding='utf-8') as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+    """Безопасное сохранение JSON файла"""
+    try:
+        with open(filepath, 'w', encoding='utf-8') as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"❌ Ошибка при сохранении {filepath}: {e}")
 
 def cleanup_stale_requests():
+    """Удаление старых запросов старше 24 часов"""
     now = datetime.now()
     for filepath in [PENDING_FILE, PENDING_RESCHEDULES_FILE, PENDING_CANCELS_FILE]:
         data = load_json(filepath)
@@ -193,81 +202,9 @@ def lessons_list_keyboard(lessons: Dict, action_type: str = "reschedule"):
     return kb
 
 # ============================================================================
-# ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ - МНОГОУРОВНЕВОЕ КЕШИРОВАНИЕ
+# ФУНКЦИИ УПРАВЛЕНИЯ ДАННЫМИ СТУДЕНТОВ
 # ============================================================================
 
-def get_week_dates(start_date: datetime = None) -> Dict:
-    if start_date is None:
-        start_date = datetime.now()
-    
-    days_ahead = 0 - start_date.weekday()
-    if days_ahead <= 0:
-        days_ahead += 7
-    
-    week_start = start_date + timedelta(days=days_ahead)
-    
-    days_map = {0: "Monday", 1: "Tuesday", 2: "Wednesday", 3: "Thursday", 4: "Friday", 5: "Saturday"}
-    days_ru = {
-        "Monday": "Понедельник",
-        "Tuesday": "Вторник",
-        "Wednesday": "Среда",
-        "Thursday": "Четверг",
-        "Friday": "Пятница",
-        "Saturday": "Суббота"
-    }
-    
-    week = {}
-    for offset in range(6):
-        date = week_start + timedelta(days=offset)
-        day_name = days_map[date.weekday()]
-        date_str = f"{date.strftime('%d %B')} ({days_ru[day_name]})"
-        week[day_name] = (date, date_str)
-    
-    return week
-
-def get_available_times(day_name: str, schedule: Dict) -> List[str]:
-    return schedule.get(day_name, [])
-
-def create_request_id():
-    import uuid
-    return str(uuid.uuid4())[:8]
-
-def parse_time(time_str: str) -> tuple:
-    parts = time_str.split(":")
-    return int(parts[0]), int(parts[1])
-
-def get_lesson_datetime(day_name: str, time_str: str) -> Optional[datetime]:
-    week = get_week_dates()
-    if day_name not in week:
-        return None
-    
-    date_obj, _ = week[day_name]
-    hour, minute = parse_time(time_str)
-    return date_obj.replace(hour=hour, minute=minute, second=0, microsecond=0)
-
-def get_student_lessons(student_id: int) -> Dict:
-    confirmed = load_json(CONFIRMED_FILE)
-    return {lid: l for lid, l in confirmed.items() if l["student_id"] == student_id}
-
-def get_tutor_lessons() -> Dict:
-    confirmed = load_json(CONFIRMED_FILE)
-    week = get_week_dates()
-    
-    tutor_lessons = {}
-    for lesson_id, lesson in confirmed.items():
-        try:
-            lesson_date = datetime.fromisoformat(lesson["lesson_datetime"])
-            week_start = week["Monday"][0]
-            week_end = week["Saturday"][0] + timedelta(days=1)
-            
-            if week_start <= lesson_date < week_end:
-                tutor_lessons[lesson_id] = lesson
-        except:
-            pass
-    
-    return tutor_lessons
-
-# ✅ НОВОЕ: Многоуровневое кеширование данных ученика
 def cache_student_info(student_id: int, name: str, grade: str):
     """Кешировать данные в памяти + сохранить в файл"""
     STUDENT_CACHE[student_id] = {"name": name, "grade": grade}
@@ -299,7 +236,7 @@ def get_student_info_from_any_source(student_id: int) -> Optional[Dict]:
         print(f"✅ Найдено в students.json: {info['name']} ({info['grade']}) - ID: {student_id}")
         return info
     
-    # Вариант 3: Из confirmed lessons (уже подтвержденные)
+    # Вариант 3: Из confirmed lessons (уже подтвережденные)
     confirmed = load_json(CONFIRMED_FILE)
     for lesson_id, lesson in confirmed.items():
         if lesson.get("student_id") == student_id:
@@ -326,15 +263,96 @@ def get_student_info_from_any_source(student_id: int) -> Optional[Dict]:
     print(f"❌ Информация ученика не найдена: ID: {student_id}")
     return None
 
-def save_student_info(student_id: int, name: str, grade: str):
-    """Сохранить данные ученика везде"""
-    cache_student_info(student_id, name, grade)
-
 def get_student_info(student_id: int) -> Optional[Dict]:
     """Получить данные ученика"""
     return get_student_info_from_any_source(student_id)
 
+# ============================================================================
+# ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
+# ============================================================================
+
+def get_week_dates(start_date: datetime = None) -> Dict:
+    """Получить даты текущей недели (понедельник - суббота)"""
+    if start_date is None:
+        start_date = datetime.now()
+    
+    current_weekday = start_date.weekday()
+    
+    if current_weekday == 6:  # Sunday
+        week_start = start_date + timedelta(days=1)
+    else:
+        days_back = current_weekday
+        week_start = start_date - timedelta(days=days_back)
+    
+    days_map = {0: "Monday", 1: "Tuesday", 2: "Wednesday", 3: "Thursday", 4: "Friday", 5: "Saturday"}
+    days_ru = {
+        "Monday": "Понедельник",
+        "Tuesday": "Вторник",
+        "Wednesday": "Среда",
+        "Thursday": "Четверг",
+        "Friday": "Пятница",
+        "Saturday": "Суббота"
+    }
+    
+    week = {}
+    for offset in range(6):
+        date = week_start + timedelta(days=offset)
+        day_name = days_map[date.weekday()]
+        date_str = f"{date.strftime('%d %B')} ({days_ru[day_name]})"
+        week[day_name] = (date, date_str)
+    
+    return week
+
+def get_available_times(day_name: str, schedule: Dict) -> List[str]:
+    """Получить доступные времена для дня"""
+    return schedule.get(day_name, [])
+
+def create_request_id():
+    """Создать уникальный ID запроса"""
+    import uuid
+    return str(uuid.uuid4())[:8]
+
+def parse_time(time_str: str) -> tuple:
+    """Парсить время из строки HH:MM"""
+    parts = time_str.split(":")
+    return int(parts[0]), int(parts[1])
+
+def get_lesson_datetime(day_name: str, time_str: str) -> Optional[datetime]:
+    """Получить datetime для занятия"""
+    week = get_week_dates()
+    if day_name not in week:
+        return None
+    
+    date_obj, _ = week[day_name]
+    hour, minute = parse_time(time_str)
+    return date_obj.replace(hour=hour, minute=minute, second=0, microsecond=0)
+
+def get_student_lessons(student_id: int) -> Dict:
+    """Получить подтвержденные занятия ученика"""
+    confirmed = load_json(CONFIRMED_FILE)
+    return {lid: l for lid, l in confirmed.items() if l["student_id"] == student_id}
+
+def get_tutor_lessons() -> Dict:
+    """Получить занятия репетитора на эту неделю"""
+    confirmed = load_json(CONFIRMED_FILE)
+    week = get_week_dates()
+    
+    tutor_lessons = {}
+    for lesson_id, lesson in confirmed.items():
+        try:
+            lesson_date = datetime.fromisoformat(lesson["lesson_datetime"])
+            week_start = week["Monday"][0]
+            week_end = week["Saturday"][0] + timedelta(days=1)
+            
+            if week_start <= lesson_date < week_end:
+                tutor_lessons[lesson_id] = lesson
+        except:
+            pass
+    
+    return tutor_lessons
+
 def format_student_schedule_message(lessons: Dict) -> str:
+    """Форматировать расписание ученика"""
     if not lessons:
         return "📭 У вас нет занятий на эту неделю."
     
@@ -357,6 +375,7 @@ def format_student_schedule_message(lessons: Dict) -> str:
     return message
 
 def format_tutor_schedule_message(lessons: Dict) -> str:
+    """Форматировать расписание репетитора"""
     if not lessons:
         return "📭 У вас нет занятий на эту неделю."
     
@@ -381,6 +400,7 @@ def format_tutor_schedule_message(lessons: Dict) -> str:
     return message
 
 def parse_time_input(text: str) -> Optional[Tuple[int, int]]:
+    """Парсить ввод времени от пользователя"""
     text = text.strip()
     
     if text.lower() in ['нет', 'no', '-', 'skip']:
@@ -403,6 +423,7 @@ def parse_time_input(text: str) -> Optional[Tuple[int, int]]:
     return "invalid"
 
 def generate_time_slots(start_hour: int, start_minute: int) -> List[str]:
+    """Сгенерировать слоты времени"""
     slots = []
     current_hour = start_hour
     current_minute = start_minute
@@ -426,6 +447,7 @@ def generate_time_slots(start_hour: int, start_minute: int) -> List[str]:
     return slots
 
 def format_schedule_for_preview(schedule_dict: Dict) -> str:
+    """Форматировать расписание для превью"""
     message = "📋 Ваше расписание:\n\n"
     
     for day_name in ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"]:
@@ -522,6 +544,8 @@ async def first_lesson_class_handler(message: types.Message, state: FSMContext):
 
 async def subject_single_handler(callback: types.CallbackQuery, state: FSMContext):
     subject = callback.data.replace("subject_single_", "")
+    current_state = await state.get_state()
+    
     await state.update_data(subject=subject)
     
     week = get_week_dates()
@@ -545,13 +569,24 @@ async def subject_single_handler(callback: types.CallbackQuery, state: FSMContex
         if times:
             date_obj, date_str = week[day_name]
             btn_text = f"{days_ru[day_name]}, {date_str}"
-            kb.inline_keyboard.append([
-                InlineKeyboardButton(text=btn_text, callback_data=f"time_{day_name}")
-            ])
+            
+            if current_state == FirstLessonStates.waiting_for_subject:
+                kb.inline_keyboard.append([
+                    InlineKeyboardButton(text=btn_text, callback_data=f"time_{day_name}")
+                ])
+            elif current_state == RepeatLessonStates.waiting_for_subject:
+                kb.inline_keyboard.append([
+                    InlineKeyboardButton(text=btn_text, callback_data=f"repeat_time_{day_name}")
+                ])
     
     kb.inline_keyboard.append([
         InlineKeyboardButton(text="❌ Отменить", callback_data="back_to_menu")
     ])
+    
+    if current_state == FirstLessonStates.waiting_for_subject:
+        await state.set_state(FirstLessonStates.waiting_for_time)
+    elif current_state == RepeatLessonStates.waiting_for_subject:
+        await state.set_state(RepeatLessonStates.waiting_for_time)
     
     await callback.message.edit_text("📅 Выберите день:", reply_markup=kb)
     await callback.answer()
@@ -596,7 +631,7 @@ async def confirm_time_handler(callback: types.CallbackQuery, state: FSMContext,
         await callback.answer("❌ Ошибка: не удалось определить время занятия")
         return
     
-    # ✅ НОВОЕ: Сохраняем данные ученика СРАЗУ в кеш перед отправкой запроса
+    # ✅ Сохраняем данные ученика СРАЗУ в кеш перед отправкой запроса
     cache_student_info(student_id, student_name, student_class)
     
     request_id = create_request_id()
@@ -659,7 +694,7 @@ async def confirm_request_handler(callback: types.CallbackQuery, bot: Bot):
     subject = request["subject"]
     lesson_datetime_str = request["lesson_datetime"]
     
-    # ✅ ИСПРАВЛЕНО: СОХРАНЯЕМ ДАННЫЕ УЧЕНИКА И В КЕШ И В ФАЙЛ
+    # Сохраняем данные ученика
     cache_student_info(student_id, student_name, student_class)
     
     confirmed = load_json(CONFIRMED_FILE)
@@ -741,17 +776,6 @@ async def repeat_lesson_handler(callback: types.CallbackQuery, state: FSMContext
     student_id = callback.from_user.id
     lessons = get_student_lessons(student_id)
     
-    # ✅ НОВОЕ: Используем многоуровневое восстановление данных
-    student_info = get_student_info_from_any_source(student_id)
-    if not student_info:
-        print(f"⚠️ ОШИБКА: При попытке повторного занятия данные не найдены для ID {student_id}")
-    else:
-        # Сохраняем в FSM для использования в следующих шагах
-        await state.update_data(
-            student_name=student_info["name"],
-            class_grade=student_info["grade"]
-        )
-    
     if not lessons:
         await callback.message.edit_text(
             "❌ У вас пока нет забронированных занятий.",
@@ -762,45 +786,16 @@ async def repeat_lesson_handler(callback: types.CallbackQuery, state: FSMContext
         await callback.answer()
         return
     
+    # Восстанавливаем данные ученика
+    student_info = get_student_info_from_any_source(student_id)
+    if student_info:
+        await state.update_data(
+            student_name=student_info["name"],
+            class_grade=student_info["grade"]
+        )
+    
     await state.set_state(RepeatLessonStates.waiting_for_subject)
     await callback.message.edit_text("📖 Выберите предмет:", reply_markup=subjects_keyboard_single())
-    await callback.answer()
-
-async def repeat_subject_handler(callback: types.CallbackQuery, state: FSMContext):
-    subject = callback.data.replace("subject_single_", "")
-    await state.update_data(subject=subject)
-    
-    week = get_week_dates()
-    schedule = load_json(SCHEDULE_FILE)
-    if not schedule:
-        schedule = DEFAULT_SCHEDULE
-    
-    days_ru = {
-        "Monday": "Понедельник",
-        "Tuesday": "Вторник",
-        "Wednesday": "Среда",
-        "Thursday": "Четверг",
-        "Friday": "Пятница",
-        "Saturday": "Суббота"
-    }
-    
-    kb = InlineKeyboardMarkup(inline_keyboard=[])
-    
-    for day_name in ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"]:
-        times = get_available_times(day_name, schedule)
-        if times:
-            date_obj, date_str = week[day_name]
-            btn_text = f"{days_ru[day_name]}, {date_str}"
-            kb.inline_keyboard.append([
-                InlineKeyboardButton(text=btn_text, callback_data=f"repeat_time_{day_name}")
-            ])
-    
-    kb.inline_keyboard.append([
-        InlineKeyboardButton(text="⬅️ Назад", callback_data="back_to_menu")
-    ])
-    
-    await callback.message.edit_text("📅 Выберите день:", reply_markup=kb)
-    await state.set_state(RepeatLessonStates.waiting_for_time)
     await callback.answer()
 
 async def repeat_time_select_handler(callback: types.CallbackQuery, state: FSMContext):
@@ -835,11 +830,9 @@ async def repeat_confirm_handler(callback: types.CallbackQuery, state: FSMContex
     subject = data.get("subject", "")
     student_id = callback.from_user.id
     
-    # ✅ НОВОЕ: Получаем данные из FSM (сохранили в repeat_lesson_handler)
-    # Или восстанавливаем из многоуровневого источника
+    # Восстанавливаем данные ученика
     student_info = get_student_info_from_any_source(student_id)
     if not student_info:
-        print(f"❌ КРИТИЧЕСКАЯ ОШИБКА: Данные ученика не найдены при повторном занятии - ID: {student_id}")
         await callback.answer("❌ Ошибка: данные ученика не найдены. Пожалуйста, сначала запишитесь на первое занятие!", show_alert=True)
         return
     
@@ -993,7 +986,7 @@ async def reschedule_confirm_handler(callback: types.CallbackQuery, state: FSMCo
     subject = data.get("reschedule_subject")
     student_id = callback.from_user.id
     
-    # ✅ НОВОЕ: Используем многоуровневое восстановление данных
+    # Восстанавливаем данные ученика
     student_info = get_student_info_from_any_source(student_id)
     if not student_info:
         confirmed = load_json(CONFIRMED_FILE)
@@ -1074,7 +1067,7 @@ async def confirm_reschedule_handler(callback: types.CallbackQuery, bot: Bot):
     subject = reschedule["subject"]
     new_datetime_str = reschedule["new_lesson_datetime"]
     
-    # ✅ ИСПРАВЛЕНО: Убеждаемся, что данные сохранены перед обновлением
+    # Убеждаемся, что данные сохранены
     cache_student_info(student_id, student_name, student_class)
     
     confirmed = load_json(CONFIRMED_FILE)
@@ -1174,7 +1167,7 @@ async def cancel_pick_handler(callback: types.CallbackQuery, state: FSMContext, 
     lesson = confirmed[lesson_id]
     student_id = callback.from_user.id
     
-    # ✅ НОВОЕ: Используем многоуровневое восстановление данных
+    # Восстанавливаем данные ученика
     student_info = get_student_info_from_any_source(student_id)
     if not student_info:
         student_name = lesson.get("student_name", "Ученик")
@@ -1481,6 +1474,7 @@ async def back_to_schedule_menu_handler(callback: types.CallbackQuery, state: FS
 # ============================================================================
 
 async def send_reminders(bot: Bot):
+    """Отправлять напоминания о занятиях за 15 минут"""
     await asyncio.sleep(60)
     
     while True:
@@ -1524,6 +1518,7 @@ async def send_reminders(bot: Bot):
             await asyncio.sleep(60)
 
 async def send_daily_schedule(bot: Bot):
+    """Отправлять ежедневное расписание репетитору в 8:00"""
     await asyncio.sleep(120)
     
     while True:
@@ -1547,6 +1542,7 @@ async def send_daily_schedule(bot: Bot):
             await asyncio.sleep(60)
 
 async def cleanup_task(bot: Bot):
+    """Очищать старые запросы каждый час"""
     await asyncio.sleep(300)
     
     while True:
@@ -1558,6 +1554,7 @@ async def cleanup_task(bot: Bot):
             await asyncio.sleep(60)
 
 async def keep_alive_task():
+    """Отправлять ping для keep-alive каждые 14 минут"""
     if not RENDER_URL:
         return
     
@@ -1631,32 +1628,48 @@ async def start_bot():
             print("OK: Dispatcher created")
             
             print("Registering handlers...")
+            
+            # Message handlers
             dp.message.register(start_handler, Command("start"))
             dp.message.register(menu_button_handler, F.text == "☰ Меню")
             dp.message.register(first_lesson_name_handler, FirstLessonStates.waiting_for_name)
             dp.message.register(first_lesson_class_handler, FirstLessonStates.waiting_for_class)
             dp.message.register(interactive_time_input_handler, InteractiveScheduleStates.waiting_for_start_time)
             
+            # Callback handlers - основные действия
             dp.callback_query.register(first_lesson_handler, F.data == "first_lesson")
             dp.callback_query.register(repeat_lesson_handler, F.data == "repeat_lesson")
             dp.callback_query.register(reschedule_lesson_handler, F.data == "reschedule_lesson")
             dp.callback_query.register(cancel_lesson_handler, F.data == "cancel_lesson")
             dp.callback_query.register(my_schedule_handler, F.data == "my_schedule")
             dp.callback_query.register(back_to_menu_handler, F.data == "back_to_menu")
+            
+            # Выбор предмета
             dp.callback_query.register(subject_single_handler, F.data.startswith("subject_single_"))
-            dp.callback_query.register(repeat_subject_handler, F.data.startswith("subject_single_"), RepeatLessonStates.waiting_for_subject)
-            dp.callback_query.register(repeat_time_select_handler, F.data.startswith("repeat_time_"))
-            dp.callback_query.register(repeat_confirm_handler, F.data.startswith("repeat_confirm_"))
-            dp.callback_query.register(time_select_handler, F.data.startswith("time_"))
+            
+            # Выбор времени - первое занятие
+            dp.callback_query.register(time_select_handler, F.data.startswith("time_"), FirstLessonStates.waiting_for_time)
             dp.callback_query.register(confirm_time_handler, F.data.startswith("confirm_time_"))
-            dp.callback_query.register(reschedule_pick_handler, F.data.startswith("reschedule_pick_"))
+            
+            # Повторное занятие
+            dp.callback_query.register(repeat_time_select_handler, F.data.startswith("repeat_time_"), RepeatLessonStates.waiting_for_time)
+            dp.callback_query.register(repeat_confirm_handler, F.data.startswith("repeat_confirm_"))
+            
+            # Перенос занятия
+            dp.callback_query.register(reschedule_pick_handler, F.data.startswith("reschedule_pick_"), RescheduleStates.choosing_lesson)
             dp.callback_query.register(reschedule_day_handler, F.data.startswith("reschedule_day_"))
             dp.callback_query.register(reschedule_confirm_handler, F.data.startswith("reschedule_confirm_"))
-            dp.callback_query.register(cancel_pick_handler, F.data.startswith("cancel_pick_"))
+            
+            # Отмена занятия
+            dp.callback_query.register(cancel_pick_handler, F.data.startswith("cancel_pick_"), CancelLessonStates.choosing_lesson)
+            
+            # Расписание репетитора
             dp.callback_query.register(edit_schedule_button_handler, F.data == "edit_schedule")
             dp.callback_query.register(interactive_day_select_handler, F.data.startswith("iday_"))
             dp.callback_query.register(interactive_save_handler, F.data == "isave_schedule")
             dp.callback_query.register(back_to_schedule_menu_handler, F.data == "back_to_schedule_menu")
+            
+            # Подтверждение/отклонение запросов репетитором
             dp.callback_query.register(confirm_reschedule_handler, F.data.startswith("confirm_reschedule_"))
             dp.callback_query.register(reject_reschedule_handler, F.data.startswith("reject_reschedule_"))
             dp.callback_query.register(confirm_cancel_handler, F.data.startswith("confirm_cancel_"))
@@ -1699,8 +1712,8 @@ async def start_bot():
 
 async def main():
     print("=" * 70)
-    print("INITIALIZING APPLICATION - COMPLETE SYSTEM (FULLY FIXED v3)")
-    print("МНОГОУРОВНЕВОЕ КЕШИРОВАНИЕ ДАННЫХ УЧЕНИКА")
+    print("INITIALIZING APPLICATION - COMPLETE SYSTEM (FULLY FIXED v4)")
+    print("ПОЛНАЯ ПЕРЕРАБОТКА: Исправлены FSM и многоуровневое кеширование")
     print("=" * 70)
     print(f"Port: {PORT}")
     print(f"Token: {'OK' if TOKEN else 'NOT SET'}")
@@ -1757,4 +1770,3 @@ if __name__ == "__main__":
         print(f"ERROR: Main thread error: {e}")
         import traceback
         traceback.print_exc()
-
