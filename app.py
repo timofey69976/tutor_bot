@@ -25,7 +25,7 @@ TOKEN = os.getenv('TOKEN')
 RENDER_URL = os.getenv('RENDER_URL', '')
 
 if not TOKEN:
-    TOKEN = '7954650918:AAHF3GJRZKbp3ihoaWN6UeYAsxHRY-A4V3w'
+     raise ValueError
 
 TUTOR_ID = 1339816111
 SUBJECTS = ["Математика", "Физика", "Химия"]
