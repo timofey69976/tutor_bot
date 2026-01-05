@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 
 import os
 import asyncio
@@ -50,14 +51,29 @@ DAYS_RU = {
     "Saturday": "Суббота"
 }
 
-DATA_DIR = Path("bot_data")
-DATA_DIR.mkdir(exist_ok=True)
+# ✅ ИСПРАВЛЕНО: Используем абсолютный путь вместо относительного
+if os.path.exists('/app'):  # Если на хостинге
+    DATA_DIR = Path('/app/bot_data')
+else:
+    DATA_DIR = Path.cwd() / 'bot_data'
+
+print(f"📂 DATA_DIR = {DATA_DIR}")
+print(f"📂 Current working directory = {Path.cwd()}")
+
+DATA_DIR.mkdir(parents=True, exist_ok=True)
+
 STUDENTS_FILE = DATA_DIR / "students.json"
 SCHEDULE_FILE = DATA_DIR / "schedule.json"
 PENDING_FILE = DATA_DIR / "pending_requests.json"
 CONFIRMED_FILE = DATA_DIR / "confirmed_lessons.json"
 PENDING_RESCHEDULES_FILE = DATA_DIR / "pending_reschedules.json"
 PENDING_CANCELS_FILE = DATA_DIR / "pending_cancels.json"
+
+print(f"📝 Files will be saved to:")
+print(f"   - {STUDENTS_FILE}")
+print(f"   - {SCHEDULE_FILE}")
+print(f"   - {CONFIRMED_FILE}")
+print(f"   - {PENDING_FILE}\n")
 
 # ✅ НОВОЕ: Глобальный кеш студентов в памяти
 STUDENT_CACHE = {}
@@ -67,18 +83,41 @@ def load_json(filepath):
     try:
         if filepath.exists():
             with open(filepath, 'r', encoding='utf-8') as f:
-                return json.load(f)
+                data = json.load(f)
+                print(f"✅ Загружено: {filepath.name} ({len(data)} записей)")
+                return data
     except Exception as e:
         print(f"⚠️ Ошибка при загрузке {filepath}: {e}")
     return {}
 
 def save_json(filepath, data):
-    """Безопасное сохранение JSON файла"""
+    """Безопасное сохранение JSON файла с проверкой"""
     try:
+        # ✅ Создаем папку если её нет
+        filepath.parent.mkdir(parents=True, exist_ok=True)
+        
+        # ✅ Проверяем что данные не пустые (если это не запланировано)
+        if not data and filepath.name not in ["pending_requests.json", "pending_reschedules.json", "pending_cancels.json"]:
+            print(f"⚠️ ВНИМАНИЕ: Попытка сохранить пустые данные в {filepath.name}")
+            # Не сохраняем пустые расписание/подтвержденные занятия
+            if filepath.name in ["schedule.json", "confirmed_lessons.json"]:
+                print(f"   ⛔ ОТМЕНЕНО: Сохранение отменено для защиты данных")
+                return
+        
+        # ✅ Записываем данные
         with open(filepath, 'w', encoding='utf-8') as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
+        
+        # ✅ Проверяем что файл действительно сохранился
+        if filepath.exists():
+            file_size = filepath.stat().st_size
+            print(f"✅ Сохранено: {filepath.name} ({file_size} байт, {len(data)} записей)")
+        else:
+            print(f"❌ ОШИБКА: Файл не был создан: {filepath}")
     except Exception as e:
-        print(f"❌ Ошибка при сохранении {filepath}: {e}")
+        print(f"❌ КРИТИЧЕСКАЯ ОШИБКА при сохранении {filepath}: {e}")
+        import traceback
+        traceback.print_exc()
 
 def cleanup_stale_requests():
     """Удаление старых запросов старше 24 часов"""
@@ -546,6 +585,7 @@ async def subject_single_handler(callback: types.CallbackQuery, state: FSMContex
     schedule = load_json(SCHEDULE_FILE)
     if not schedule:
         schedule = DEFAULT_SCHEDULE
+        print(f"⚠️ Расписание пусто! Используем DEFAULT_SCHEDULE")
     
     days_ru = {
         "Monday": "Понедельник",
@@ -1286,6 +1326,7 @@ async def back_to_menu_handler(callback: types.CallbackQuery, state: FSMContext)
 
 async def edit_schedule_button_handler(callback: types.CallbackQuery, state: FSMContext):
     current_schedule = load_json(SCHEDULE_FILE) or DEFAULT_SCHEDULE
+    print(f"📋 Текущее расписание при открытии редактора: {current_schedule}")
     
     await state.update_data(
         interactive_schedule=current_schedule.copy(),
@@ -1374,6 +1415,7 @@ async def interactive_time_input_handler(message: types.Message, state: FSMConte
         slots_str = ", ".join(slots)
         message_text = f"✅ {day_ru}:\n{slots_str}\n\n(автоматически созданы слоты по 1 часу)"
     
+    print(f"📋 Расписание в памяти: {interactive_schedule}")
     await state.update_data(interactive_schedule=interactive_schedule)
     
     kb = InlineKeyboardMarkup(inline_keyboard=[
@@ -1405,8 +1447,12 @@ async def interactive_save_handler(callback: types.CallbackQuery, state: FSMCont
     data = await state.get_data()
     interactive_schedule = data.get("interactive_schedule", {})
     
+    print(f"📋 ПЕРЕД СОХРАНЕНИЕМ: {interactive_schedule}")
     save_json(SCHEDULE_FILE, interactive_schedule)
-    print(f"✅ Расписание сохранено: {interactive_schedule}")
+    
+    # ✅ Проверяем что действительно сохранилось
+    verification = load_json(SCHEDULE_FILE)
+    print(f"📋 ПОСЛЕ ЗАГРУЗКИ: {verification}")
     
     preview = format_schedule_for_preview(interactive_schedule)
     
@@ -1471,15 +1517,12 @@ async def send_reminders(bot: Bot):
                     lesson_time = datetime.fromisoformat(lesson.get('lesson_datetime', ''))
                     time_diff = (lesson_time - now).total_seconds()
                     
-                    # ✅ Проверяем, что осталось ровно 60 минут (3600 секунд)
-                    # С допуском ±2 минуты (120 секунд)
-                    if 3480 <= time_diff <= 3720:  # 58-62 минут
+                    if 3480 <= time_diff <= 3720:
                         student_id = lesson.get('student_id')
                         student_name = lesson.get('student_name')
                         subject = lesson.get('subject')
                         lesson_time_str = lesson_time.strftime('%H:%M')
                         
-                        # ✅ Сообщение для ученика (только предмет и время)
                         await bot.send_message(
                             student_id,
                             f"⏰ <b>Напоминание:</b>\n"
@@ -1488,7 +1531,6 @@ async def send_reminders(bot: Bot):
                             reply_markup=persistent_menu_keyboard()
                         )
                         
-                        # ✅ Сообщение для репетитора (имя ученика + предмет + время)
                         await bot.send_message(
                             TUTOR_ID,
                             f"⏰ <b>Напоминание:</b>\n"
@@ -1502,7 +1544,7 @@ async def send_reminders(bot: Bot):
                 except Exception as e:
                     pass
             
-            await asyncio.sleep(300)  # Проверяем каждые 5 минут
+            await asyncio.sleep(300)
         except Exception as e:
             print(f"⚠️ Ошибка в send_reminders: {e}")
             await asyncio.sleep(60)
@@ -1617,14 +1659,12 @@ async def start_bot():
             print("OK: Dispatcher created")
             print("Registering handlers...")
             
-            # Message handlers
             dp.message.register(start_handler, Command("start"))
             dp.message.register(menu_button_handler, F.text == "☰ Меню")
             dp.message.register(first_lesson_name_handler, FirstLessonStates.waiting_for_name)
             dp.message.register(first_lesson_class_handler, FirstLessonStates.waiting_for_class)
             dp.message.register(interactive_time_input_handler, InteractiveScheduleStates.waiting_for_start_time)
             
-            # Callback handlers - основные действия
             dp.callback_query.register(first_lesson_handler, F.data == "first_lesson")
             dp.callback_query.register(repeat_lesson_handler, F.data == "repeat_lesson")
             dp.callback_query.register(reschedule_lesson_handler, F.data == "reschedule_lesson")
@@ -1632,32 +1672,25 @@ async def start_bot():
             dp.callback_query.register(my_schedule_handler, F.data == "my_schedule")
             dp.callback_query.register(back_to_menu_handler, F.data == "back_to_menu")
             
-            # Выбор предмета
             dp.callback_query.register(subject_single_handler, F.data.startswith("subject_single_"))
             
-            # Выбор времени - первое занятие
             dp.callback_query.register(time_select_handler, F.data.startswith("time_"), FirstLessonStates.waiting_for_time)
             dp.callback_query.register(confirm_time_handler, F.data.startswith("confirm_time_"))
             
-            # Повторное занятие
             dp.callback_query.register(repeat_time_select_handler, F.data.startswith("repeat_time_"), RepeatLessonStates.waiting_for_time)
             dp.callback_query.register(repeat_confirm_handler, F.data.startswith("repeat_confirm_"))
             
-            # Перенос занятия
             dp.callback_query.register(reschedule_pick_handler, F.data.startswith("reschedule_pick_"), RescheduleStates.choosing_lesson)
             dp.callback_query.register(reschedule_day_handler, F.data.startswith("reschedule_day_"))
             dp.callback_query.register(reschedule_confirm_handler, F.data.startswith("reschedule_confirm_"))
             
-            # Отмена занятия
             dp.callback_query.register(cancel_pick_handler, F.data.startswith("cancel_pick_"), CancelLessonStates.choosing_lesson)
             
-            # Расписание репетитора
             dp.callback_query.register(edit_schedule_button_handler, F.data == "edit_schedule")
             dp.callback_query.register(interactive_day_select_handler, F.data.startswith("iday_"))
             dp.callback_query.register(interactive_save_handler, F.data == "isave_schedule")
             dp.callback_query.register(back_to_schedule_menu_handler, F.data == "back_to_schedule_menu")
             
-            # Подтверждение/отклонение запросов репетитором
             dp.callback_query.register(confirm_reschedule_handler, F.data.startswith("confirm_reschedule_"))
             dp.callback_query.register(reject_reschedule_handler, F.data.startswith("reject_reschedule_"))
             dp.callback_query.register(confirm_cancel_handler, F.data.startswith("confirm_cancel_"))
@@ -1704,8 +1737,8 @@ async def start_bot():
 
 async def main():
     print("=" * 70)
-    print("INITIALIZING APPLICATION - COMPLETE SYSTEM (FULLY FIXED v5)")
-    print("ПОЛНАЯ ПЕРЕРАБОТКА: Исправлены FSM, кеширование и исключение занятых слотов")
+    print("INITIALIZING APPLICATION - COMPLETE SYSTEM (FIXED DATA PERSISTENCE v6)")
+    print("✅ ИСПРАВЛЕНО: Защита от потери данных расписания")
     print("=" * 70)
     print(f"Port: {PORT}")
     print(f"Token: {'OK' if TOKEN else 'NOT SET'}")
