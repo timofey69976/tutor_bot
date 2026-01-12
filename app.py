@@ -128,7 +128,7 @@ def save_json(filepath, data):
 
 def cleanup_stale_requests():
     """Удаление старых запросов старше 24 часов"""
-    now = datetime.now()
+    now = datetime.now(tz=MSK_TIMEZONE)
 
     for filepath in [PENDING_FILE, PENDING_RESCHEDULES_FILE, PENDING_CANCELS_FILE]:
         data = load_json(filepath)
@@ -137,6 +137,10 @@ def cleanup_stale_requests():
         for req_id, req in data.items():
             try:
                 req_time = datetime.fromisoformat(req.get("timestamp", ""))
+                # Если время без часового пояса, добавляем MSK
+                if req_time.tzinfo is None:
+                    req_time = req_time.replace(tzinfo=MSK_TIMEZONE)
+                
                 if (now - req_time).total_seconds() > 86400:
                     stale_ids.append(req_id)
             except:
@@ -221,7 +225,7 @@ async def send_daily_schedule(bot: Bot):
 
     while True:
         try:
-            now = datetime.now()
+            now = datetime.now(tz=MSK_TIMEZONE)
 
             if now.hour == 8 and 0 <= now.minute < 5:
                 print(f"📅 Отправляю расписание в {now.strftime('%H:%M:%S')}")
@@ -235,6 +239,9 @@ async def send_daily_schedule(bot: Bot):
                     for lesson in sorted_lessons:
                         try:
                             lesson_date = datetime.fromisoformat(lesson["lesson_datetime"])
+                            # Если время без часового пояса, добавляем MSK
+                            if lesson_date.tzinfo is None:
+                                lesson_date = lesson_date.replace(tzinfo=MSK_TIMEZONE)
                             time_str = lesson_date.strftime("%H:%M")
                             student_name = lesson.get("student_name", "Неизвестный ученик")
                             subject = lesson.get("subject", "Неизвестный предмет")
@@ -434,9 +441,13 @@ def get_student_info(student_id: int) -> Optional[Dict]:
 # ============================================================================
 
 def get_week_dates(start_date: datetime = None) -> Dict:
-    """Получить даты текущей недели (понедельник - суббота)"""
+    """Получить даты текущей недели (понедельник - суббота) с правильным часовым поясом"""
     if start_date is None:
-        start_date = datetime.now()
+        start_date = datetime.now(tz=MSK_TIMEZONE)
+    
+    # Убедимся, что start_date имеет часовой пояс MSK
+    if start_date.tzinfo is None:
+        start_date = start_date.replace(tzinfo=MSK_TIMEZONE)
 
     current_weekday = start_date.weekday()
 
@@ -477,6 +488,11 @@ def get_booked_times() -> Dict[str, bool]:
     for lesson_id, lesson in confirmed.items():
         try:
             lesson_datetime = datetime.fromisoformat(lesson["lesson_datetime"])
+            
+            # Если время без часового пояса, добавляем MSK
+            if lesson_datetime.tzinfo is None:
+                lesson_datetime = lesson_datetime.replace(tzinfo=MSK_TIMEZONE)
+            
             lesson_time = lesson_datetime.strftime("%H:%M")
             date_str = lesson_datetime.strftime("%Y-%m-%d")
             key = f"{date_str}_{lesson_time}"
@@ -523,7 +539,6 @@ def parse_time(time_str: str) -> tuple:
     parts = time_str.split(":")
     return int(parts[0]), int(parts[1])
 
-# 🔧 ИСПРАВЛЕННАЯ ФУНКЦИЯ: Добавляем часовой пояс при создании datetime
 def get_lesson_datetime(day_name: str, time_str: str) -> Optional[datetime]:
     """Получить datetime для занятия с правильным часовым поясом MSK"""
     week = get_week_dates()
@@ -534,10 +549,10 @@ def get_lesson_datetime(day_name: str, time_str: str) -> Optional[datetime]:
     date_obj, _ = week[day_name]
     hour, minute = parse_time(time_str)
 
-    dt = date_obj.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    # 🔧 ИСПРАВЛЕНИЕ: Создаем aware datetime правильно - timezone в replace()
+    dt = date_obj.replace(hour=hour, minute=minute, second=0, microsecond=0, tzinfo=MSK_TIMEZONE)
 
-    # 🔧 ИСПРАВЛЕНИЕ: Добавляем часовой пояс MSK (UTC+3)
-    return dt.replace(tzinfo=MSK_TIMEZONE)
+    return dt
 
 def get_student_lessons(student_id: int) -> Dict:
     """Получить подтвержденные занятия ученика"""
@@ -554,13 +569,19 @@ def get_tutor_lessons() -> Dict:
     for lesson_id, lesson in confirmed.items():
         try:
             lesson_date = datetime.fromisoformat(lesson["lesson_datetime"])
+            
+            # 🔧 ИСПРАВЛЕНИЕ: Если время без часового пояса, добавляем MSK
+            if lesson_date.tzinfo is None:
+                lesson_date = lesson_date.replace(tzinfo=MSK_TIMEZONE)
+            
             week_start = week["Monday"][0]
             week_end = week["Saturday"][0] + timedelta(days=1)
 
             if week_start <= lesson_date < week_end:
                 tutor_lessons[lesson_id] = lesson
 
-        except:
+        except Exception as e:
+            print(f"⚠️ Ошибка при обработке tutor lesson {lesson_id}: {e}")
             pass
 
     return tutor_lessons
@@ -577,6 +598,10 @@ def format_student_schedule_message(lessons: Dict) -> str:
     for lesson in sorted_lessons:
         try:
             lesson_date = datetime.fromisoformat(lesson["lesson_datetime"])
+            # Если время без часового пояса, добавляем MSK
+            if lesson_date.tzinfo is None:
+                lesson_date = lesson_date.replace(tzinfo=MSK_TIMEZONE)
+            
             date_str = lesson_date.strftime("%d.%m.%Y")
             time_str = lesson_date.strftime("%H:%M")
             subject = lesson.get("subject", "Неизвестный предмет")
@@ -602,6 +627,10 @@ def format_tutor_schedule_message(lessons: Dict) -> str:
     for lesson in sorted_lessons:
         try:
             lesson_date = datetime.fromisoformat(lesson["lesson_datetime"])
+            # Если время без часового пояса, добавляем MSK
+            if lesson_date.tzinfo is None:
+                lesson_date = lesson_date.replace(tzinfo=MSK_TIMEZONE)
+            
             date_str = lesson_date.strftime("%d.%m.%Y")
             time_str = lesson_date.strftime("%H:%M")
             student_name = lesson.get("student_name", "Неизвестный ученик")
@@ -876,7 +905,7 @@ async def confirm_time_handler(callback: types.CallbackQuery, state: FSMContext,
         "student_class": student_class,
         "subject": subject,
         "lesson_datetime": lesson_datetime.isoformat(),
-        "timestamp": datetime.now().isoformat(),
+        "timestamp": datetime.now(tz=MSK_TIMEZONE).isoformat(),
         "status": "pending"
     }
 
@@ -944,7 +973,7 @@ async def confirm_request_handler(callback: types.CallbackQuery, bot: Bot):
         "date_str": datetime.fromisoformat(lesson_datetime_str).strftime("%d.%m.%Y"),
         "time": datetime.fromisoformat(lesson_datetime_str).strftime("%H:%M"),
         "status": "confirmed",
-        "timestamp": datetime.now().isoformat()
+        "timestamp": datetime.now(tz=MSK_TIMEZONE).isoformat()
     }
 
     save_json(CONFIRMED_FILE, confirmed)
@@ -955,6 +984,9 @@ async def confirm_request_handler(callback: types.CallbackQuery, bot: Bot):
     print(f"✅ Занятие подтверждено: {lesson_id} - {student_name}")
 
     lesson_datetime = datetime.fromisoformat(lesson_datetime_str)
+    if lesson_datetime.tzinfo is None:
+        lesson_datetime = lesson_datetime.replace(tzinfo=MSK_TIMEZONE)
+    
     date_str = lesson_datetime.strftime("%d.%m.%Y")
     time_str = lesson_datetime.strftime("%H:%M")
 
@@ -1104,7 +1136,7 @@ async def repeat_confirm_handler(callback: types.CallbackQuery, state: FSMContex
         "student_class": student_class,
         "subject": subject,
         "lesson_datetime": lesson_datetime.isoformat(),
-        "timestamp": datetime.now().isoformat(),
+        "timestamp": datetime.now(tz=MSK_TIMEZONE).isoformat(),
         "status": "pending",
         "type": "repeat"
     }
@@ -1286,7 +1318,7 @@ async def reschedule_confirm_handler(callback: types.CallbackQuery, state: FSMCo
         "student_class": student_class,
         "subject": subject,
         "new_lesson_datetime": new_lesson_datetime.isoformat(),
-        "timestamp": datetime.now().isoformat(),
+        "timestamp": datetime.now(tz=MSK_TIMEZONE).isoformat(),
         "status": "pending"
     }
 
@@ -1348,6 +1380,9 @@ async def confirm_reschedule_handler(callback: types.CallbackQuery, bot: Bot):
         confirmed[lesson_id]["lesson_datetime"] = new_datetime_str
 
         new_datetime = datetime.fromisoformat(new_datetime_str)
+        if new_datetime.tzinfo is None:
+            new_datetime = new_datetime.replace(tzinfo=MSK_TIMEZONE)
+        
         confirmed[lesson_id]["date_str"] = new_datetime.strftime("%d.%m.%Y")
         confirmed[lesson_id]["time"] = new_datetime.strftime("%H:%M")
 
@@ -1359,6 +1394,9 @@ async def confirm_reschedule_handler(callback: types.CallbackQuery, bot: Bot):
     print(f"✅ Перенос занятия подтвержден: {reschedule_id} - {student_name} ({student_class})")
 
     new_datetime = datetime.fromisoformat(new_datetime_str)
+    if new_datetime.tzinfo is None:
+        new_datetime = new_datetime.replace(tzinfo=MSK_TIMEZONE)
+    
     date_str = new_datetime.strftime("%d.%m.%Y")
     time_str = new_datetime.strftime("%H:%M")
 
@@ -1472,7 +1510,7 @@ async def cancel_pick_handler(callback: types.CallbackQuery, state: FSMContext, 
         "student_class": student_class,
         "subject": lesson["subject"],
         "lesson_datetime": lesson["lesson_datetime"],
-        "timestamp": datetime.now().isoformat(),
+        "timestamp": datetime.now(tz=MSK_TIMEZONE).isoformat(),
         "status": "pending"
     }
 
@@ -1481,6 +1519,9 @@ async def cancel_pick_handler(callback: types.CallbackQuery, state: FSMContext, 
     print(f"📝 Создан запрос на отмену занятия: {cancel_id} - {student_name}")
 
     lesson_datetime = datetime.fromisoformat(lesson["lesson_datetime"])
+    if lesson_datetime.tzinfo is None:
+        lesson_datetime = lesson_datetime.replace(tzinfo=MSK_TIMEZONE)
+    
     lesson_date_str = lesson_datetime.strftime("%d.%m.%Y")
     lesson_time_str = lesson_datetime.strftime("%H:%M")
 
@@ -1765,7 +1806,7 @@ async def back_to_schedule_menu_handler(callback: types.CallbackQuery, state: FS
 # ============================================================================
 
 async def health_handler(request):
-    return web.json_response({"status": "ok", "service": "tutorbot", "timestamp": datetime.now().isoformat()})
+    return web.json_response({"status": "ok", "service": "tutorbot", "timestamp": datetime.now(tz=MSK_TIMEZONE).isoformat()})
 
 async def root_handler(request):
     return web.Response(text="Bot is running!", status=200)
@@ -1814,7 +1855,7 @@ async def keep_alive_task():
                 try:
                     async with session.get(f'{RENDER_URL}/health', timeout=5) as resp:
                         if resp.status == 200:
-                            print(f"✅ Keep-alive ping: {datetime.now().strftime('%H:%M:%S')}")
+                            print(f"✅ Keep-alive ping: {datetime.now(tz=MSK_TIMEZONE).strftime('%H:%M:%S')}")
 
                 except Exception as e:
                     print(f"⚠️ Keep-alive: {e}")
