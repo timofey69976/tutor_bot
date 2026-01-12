@@ -84,6 +84,9 @@ print(f" - {PENDING_FILE}\n")
 # ✅ НОВОЕ: Глобальный кеш студентов в памяти
 STUDENT_CACHE = {}
 
+# ✅ ИСПРАВЛЕНИЕ: Глобальный набор для отслеживания отправленных напоминаний
+SENT_REMINDERS = set()
+
 # ============================================================================
 # ФУНКЦИИ РАБОТЫ С JSON
 # ============================================================================
@@ -153,12 +156,37 @@ def cleanup_stale_requests():
         if stale_ids:
             save_json(filepath, data)
 
+def cleanup_sent_reminders_list():
+    """Очистить отправленные напоминания старше 2 часов"""
+    global SENT_REMINDERS
+    now = datetime.now(tz=MSK_TIMEZONE)
+    
+    # Создаем новый набор только с актуальными напоминаниями
+    active_reminders = set()
+    
+    for reminder_key in SENT_REMINDERS:
+        try:
+            # reminder_key формат: "lesson_id:timestamp"
+            parts = reminder_key.split(":", 1)
+            if len(parts) == 2:
+                lesson_id, timestamp_str = parts
+                timestamp = datetime.fromisoformat(timestamp_str)
+                
+                # Если время напоминания прошло менее 2 часов назад, сохраняем
+                if (now - timestamp).total_seconds() < 7200:
+                    active_reminders.add(reminder_key)
+        except Exception as e:
+            print(f"⚠️ Ошибка при очистке напоминания {reminder_key}: {e}")
+    
+    SENT_REMINDERS = active_reminders
+    print(f"🧹 Очищены старые напоминания. Активных: {len(SENT_REMINDERS)}")
+
 # ============================================================================
 # ФУНКЦИИ ОТПРАВКИ СООБЩЕНИЙ
 # ============================================================================
 
 async def send_reminders(bot: Bot):
-    """Отправлять напоминание за 60 минут до занятия"""
+    """Отправлять напоминание за 60 минут до занятия (ТОЛЬКО ОДИН РАЗ)"""
     await asyncio.sleep(15)
 
     while True:
@@ -170,7 +198,7 @@ async def send_reminders(bot: Bot):
                 try:
                     lesson_time = datetime.fromisoformat(lesson.get('lesson_datetime', ''))
 
-                    # 🔧 ИСПРАВЛЕНИЕ: Если время без часового пояса, добавляем MSK
+                    # Гарантируем aware datetime для корректного сравнения
                     if lesson_time.tzinfo is None:
                         lesson_time = lesson_time.replace(tzinfo=MSK_TIMEZONE)
 
@@ -178,42 +206,54 @@ async def send_reminders(bot: Bot):
 
                     # За 60±5 минут до занятия (3480-3720 секунд это 58-62 минуты)
                     if 3480 <= time_diff <= 3720:
-                        student_id = lesson.get('student_id')
-                        student_name = lesson.get('student_name')
-                        subject = lesson.get('subject')
-                        lesson_time_str = lesson_time.strftime('%H:%M')
+                        # 🔧 ИСПРАВЛЕНИЕ: Проверяем, было ли уже отправлено напоминание
+                        reminder_key = f"{lesson_id}:{lesson_time.isoformat()}"
+                        
+                        if reminder_key not in SENT_REMINDERS:
+                            student_id = lesson.get('student_id')
+                            student_name = lesson.get('student_name')
+                            subject = lesson.get('subject')
+                            lesson_time_str = lesson_time.strftime('%H:%M')
 
-                        print(f"📤 Отправляю напоминание для занятия {lesson_id}")
+                            print(f"📤 Отправляю напоминание для занятия {lesson_id}")
 
-                        # Напоминание для ученика:
-                        await bot.send_message(
-                            student_id,
-                            f"⏰ Напоминание о занятии!\n\n"
-                            f"Предмет: {subject}\n"
-                            f"Время: {lesson_time_str}\n\n"
-                            f"Занятие начинается через 1 час! 📚",
-                            parse_mode="HTML",
-                            reply_markup=persistent_menu_keyboard()
-                        )
+                            # Напоминание для ученика:
+                            await bot.send_message(
+                                student_id,
+                                f"⏰ Напоминание о занятии!\n\n"
+                                f"Предмет: {subject}\n"
+                                f"Время: {lesson_time_str}\n\n"
+                                f"Занятие начинается через 1 час! 📚",
+                                parse_mode="HTML",
+                                reply_markup=persistent_menu_keyboard()
+                            )
 
-                        # Напоминание для репетитора:
-                        await bot.send_message(
-                            TUTOR_ID,
-                            f"⏰ Напоминание о занятии!\n\n"
-                            f"Ученик: {student_name}\n"
-                            f"Предмет: {subject}\n"
-                            f"Время: {lesson_time_str}\n\n"
-                            f"Занятие начинается через 1 час! 📚",
-                            parse_mode="HTML",
-                            reply_markup=persistent_menu_keyboard()
-                        )
+                            # Напоминание для репетитора:
+                            await bot.send_message(
+                                TUTOR_ID,
+                                f"⏰ Напоминание о занятии!\n\n"
+                                f"Ученик: {student_name}\n"
+                                f"Предмет: {subject}\n"
+                                f"Время: {lesson_time_str}\n\n"
+                                f"Занятие начинается через 1 час! 📚",
+                                parse_mode="HTML",
+                                reply_markup=persistent_menu_keyboard()
+                            )
 
-                        print(f"✅ Напоминание отправлено")
+                            # 🔧 ИСПРАВЛЕНИЕ: Добавляем в набор отправленных
+                            SENT_REMINDERS.add(reminder_key)
+                            print(f"✅ Напоминание отправлено и запомнено")
+                        else:
+                            print(f"⏭️ Напоминание для {lesson_id} уже отправлено, пропускаем")
 
                 except Exception as e:
                     print(f"⚠️ Ошибка при обработке напоминания {lesson_id}: {e}")
 
             await asyncio.sleep(60)
+            
+            # Каждые 10 минут очищаем старые напоминания
+            if int(now.timestamp()) % 600 == 0:
+                cleanup_sent_reminders_list()
 
         except Exception as e:
             print(f"⚠️ Ошибка в send_reminders: {e}")
@@ -1961,7 +2001,7 @@ async def start_bot():
 
 async def main():
     print("=" * 70)
-    print("INITIALIZING APPLICATION - FIXED TIMEZONE SUPPORT")
+    print("INITIALIZING APPLICATION - FIXED TIMEZONE SUPPORT + REMINDER FIX")
     print("=" * 70)
     print()
 
@@ -1993,6 +2033,10 @@ async def main():
     print("\n🧹 Performing startup cleanup...")
 
     cleanup_stale_requests()
+    
+    # 🔧 ИСПРАВЛЕНИЕ: Очищаем напоминания при запуске
+    SENT_REMINDERS.clear()
+    print("🧹 Очищены старые напоминания при запуске")
 
     print("✅ Startup cleanup completed\n")
 
@@ -2035,4 +2079,3 @@ if __name__ == '__main__':
 
         import traceback
         traceback.print_exc()
-
