@@ -4,9 +4,12 @@ import os
 import asyncio
 import sys
 import json
-from datetime import datetime, timedelta
+import uuid
+
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional, Dict, List, Tuple
+
 from aiohttp import web, ClientSession
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.fsm.context import FSMContext
@@ -51,8 +54,11 @@ DAYS_RU = {
     "Saturday": "Суббота"
 }
 
+# 🔧 ИСПРАВЛЕНИЕ: Добавляем часовой пояс MSK (UTC+3)
+MSK_TIMEZONE = timezone(timedelta(hours=3))
+
 # ✅ ИСПРАВЛЕНО: Используем абсолютный путь вместо относительного
-if os.path.exists('/app'):  # Если на хостинге
+if os.path.exists('/app'):
     DATA_DIR = Path('/app/bot_data')
 else:
     DATA_DIR = Path.cwd() / 'bot_data'
@@ -78,6 +84,10 @@ print(f" - {PENDING_FILE}\n")
 # ✅ НОВОЕ: Глобальный кеш студентов в памяти
 STUDENT_CACHE = {}
 
+# ============================================================================
+# ФУНКЦИИ РАБОТЫ С JSON
+# ============================================================================
+
 def load_json(filepath):
     """Безопасная загрузка JSON файла"""
     try:
@@ -93,23 +103,18 @@ def load_json(filepath):
 def save_json(filepath, data):
     """Безопасное сохранение JSON файла с проверкой"""
     try:
-        # ✅ Создаем папку если её нет
         filepath.parent.mkdir(parents=True, exist_ok=True)
 
-        # ✅ Проверяем что данные не пустые (если это не запланировано)
         if not data and filepath.name not in ["pending_requests.json", "pending_reschedules.json", "pending_cancels.json"]:
             print(f"⚠️ ВНИМАНИЕ: Попытка сохранить пустые данные в {filepath.name}")
 
-            # Не сохраняем пустые расписание/подтвержденные занятия
             if filepath.name in ["schedule.json", "confirmed_lessons.json"]:
                 print(f" ⛔ ОТМЕНЕНО: Сохранение отменено для защиты данных")
                 return
 
-        # ✅ Записываем данные
         with open(filepath, 'w', encoding='utf-8') as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
 
-        # ✅ Проверяем что файл действительно сохранился
         if filepath.exists():
             file_size = filepath.stat().st_size
             print(f"✅ Сохранено: {filepath.name} ({file_size} байт, {len(data)} записей)")
@@ -124,9 +129,11 @@ def save_json(filepath, data):
 def cleanup_stale_requests():
     """Удаление старых запросов старше 24 часов"""
     now = datetime.now()
+
     for filepath in [PENDING_FILE, PENDING_RESCHEDULES_FILE, PENDING_CANCELS_FILE]:
         data = load_json(filepath)
         stale_ids = []
+
         for req_id, req in data.items():
             try:
                 req_time = datetime.fromisoformat(req.get("timestamp", ""))
@@ -143,132 +150,128 @@ def cleanup_stale_requests():
             save_json(filepath, data)
 
 # ============================================================================
-# ИСПРАВЛЕННЫЕ ФУНКЦИИ ОТПРАВКИ СООБЩЕНИЙ
+# ФУНКЦИИ ОТПРАВКИ СООБЩЕНИЙ
 # ============================================================================
 
 async def send_reminders(bot: Bot):
     """Отправлять напоминание за 60 минут до занятия"""
     await asyncio.sleep(15)
-    
+
     while True:
         try:
-            now = datetime.now()
+            now = datetime.now(tz=MSK_TIMEZONE)
             confirmed = load_json(CONFIRMED_FILE)
-            
+
             for lesson_id, lesson in confirmed.items():
                 try:
                     lesson_time = datetime.fromisoformat(lesson.get('lesson_datetime', ''))
+
+                    # 🔧 ИСПРАВЛЕНИЕ: Если время без часового пояса, добавляем MSK
+                    if lesson_time.tzinfo is None:
+                        lesson_time = lesson_time.replace(tzinfo=MSK_TIMEZONE)
+
                     time_diff = (lesson_time - now).total_seconds()
-                    
+
                     # За 60±5 минут до занятия (3480-3720 секунд это 58-62 минуты)
                     if 3480 <= time_diff <= 3720:
                         student_id = lesson.get('student_id')
                         student_name = lesson.get('student_name')
                         subject = lesson.get('subject')
                         lesson_time_str = lesson_time.strftime('%H:%M')
-                        
+
                         print(f"📤 Отправляю напоминание для занятия {lesson_id}")
-                        
-                        # ИСПРАВЛЕННАЯ строка для ученика:
+
+                        # Напоминание для ученика:
                         await bot.send_message(
                             student_id,
-                            f"⏰ <b>Напоминание о занятии!</b>\n\n"
-                            f"Предмет: <b>{subject}</b>\n"
-                            f"Время: <b>{lesson_time_str}</b>\n\n"
+                            f"⏰ Напоминание о занятии!\n\n"
+                            f"Предмет: {subject}\n"
+                            f"Время: {lesson_time_str}\n\n"
                             f"Занятие начинается через 1 час! 📚",
                             parse_mode="HTML",
                             reply_markup=persistent_menu_keyboard()
                         )
-                        
-                        # ИСПРАВЛЕННАЯ строка для репетитора:
+
+                        # Напоминание для репетитора:
                         await bot.send_message(
                             TUTOR_ID,
-                            f"⏰ <b>Напоминание о занятии!</b>\n\n"
-                            f"Ученик: <b>{student_name}</b>\n"
-                            f"Предмет: <b>{subject}</b>\n"
-                            f"Время: <b>{lesson_time_str}</b>\n\n"
+                            f"⏰ Напоминание о занятии!\n\n"
+                            f"Ученик: {student_name}\n"
+                            f"Предмет: {subject}\n"
+                            f"Время: {lesson_time_str}\n\n"
                             f"Занятие начинается через 1 час! 📚",
                             parse_mode="HTML",
                             reply_markup=persistent_menu_keyboard()
                         )
-                        
+
                         print(f"✅ Напоминание отправлено")
-                
+
                 except Exception as e:
                     print(f"⚠️ Ошибка при обработке напоминания {lesson_id}: {e}")
-            
-            # Проверяем каждую минуту
+
             await asyncio.sleep(60)
-        
+
         except Exception as e:
             print(f"⚠️ Ошибка в send_reminders: {e}")
             await asyncio.sleep(60)
 
-
 async def send_daily_schedule(bot: Bot):
     """Отправлять ежедневное расписание репетитору в 8:00"""
     await asyncio.sleep(120)
-    
+
     while True:
         try:
             now = datetime.now()
-            
-            # Проверяем в 08:00-08:05
+
             if now.hour == 8 and 0 <= now.minute < 5:
                 print(f"📅 Отправляю расписание в {now.strftime('%H:%M:%S')}")
-                
+
                 lessons = get_tutor_lessons()
-                
+
                 if lessons:
-                    message = f"📚 <b>Расписание на сегодня:</b>\n\n"
-                    
+                    message = f"📚 Расписание на сегодня:\n\n"
                     sorted_lessons = sorted(lessons.values(), key=lambda x: x.get("lesson_datetime", ""))
-                    
+
                     for lesson in sorted_lessons:
                         try:
                             lesson_date = datetime.fromisoformat(lesson["lesson_datetime"])
                             time_str = lesson_date.strftime("%H:%M")
                             student_name = lesson.get("student_name", "Неизвестный ученик")
                             subject = lesson.get("subject", "Неизвестный предмет")
-                            
-                            message += f"⏰ <b>{time_str}</b> - {student_name} ({subject})\n"
+                            message += f"⏰ {time_str} - {student_name} ({subject})\n"
                         except:
                             pass
                 else:
-                    message = "📭 <b>На сегодня нет занятий</b>"
-                
+                    message = "📭 На сегодня нет занятий"
+
                 await bot.send_message(
                     TUTOR_ID,
                     message,
                     parse_mode="HTML",
                     reply_markup=persistent_menu_keyboard()
                 )
-                
+
                 print(f"✅ Расписание отправлено успешно")
-                
-                # Спим до следующего дня, чтобы не отправлять несколько раз
                 await asyncio.sleep(3600)
-            
-            # Проверяем каждую минуту
-            await asyncio.sleep(60)
-        
+            else:
+                await asyncio.sleep(60)
+
         except Exception as e:
             print(f"⚠️ Ошибка в send_daily_schedule: {e}")
             await asyncio.sleep(60)
 
-
 async def cleanup_task(bot: Bot):
     """Очищать старые запросы каждый час"""
     await asyncio.sleep(300)
-    
+
     while True:
         try:
             print(f"🧹 Запускаю очистку старых запросов [{datetime.now().strftime('%H:%M:%S')}]")
             cleanup_stale_requests()
             print(f"✅ Очистка завершена")
-            
-            # Спим 1 час
+
             await asyncio.sleep(3600)
+
         except Exception as e:
             print(f"⚠️ Ошибка в cleanup_task: {e}")
             await asyncio.sleep(60)
@@ -313,10 +316,12 @@ def main_menu_keyboard(user_id: int):
         [InlineKeyboardButton(text="❌ Отменить занятие", callback_data="cancel_lesson")],
         [InlineKeyboardButton(text="📚 Мое расписание", callback_data="my_schedule")]
     ])
+
     if user_id == TUTOR_ID:
         kb.inline_keyboard.append(
             [InlineKeyboardButton(text="🛠 Изменить расписание", callback_data="edit_schedule")]
         )
+
     return kb
 
 def persistent_menu_keyboard():
@@ -349,45 +354,43 @@ def tutor_cancel_confirm_keyboard(cancel_id: str):
 
 def lessons_list_keyboard(lessons: Dict, action_type: str = "reschedule"):
     kb = InlineKeyboardMarkup(inline_keyboard=[])
+
     for lesson_id, lesson in lessons.items():
         btn_text = f"{lesson['student_name']} - {lesson['date_str']} {lesson['time']}"
         callback = f"{action_type}_{lesson_id}"
+
         kb.inline_keyboard.append([
             InlineKeyboardButton(text=btn_text, callback_data=callback)
         ])
+
     kb.inline_keyboard.append([
         InlineKeyboardButton(text="⬅️ Вернуться в меню", callback_data="back_to_menu")
     ])
+
     return kb
 
 # ============================================================================
-# ФУНКЦИИ УПРАВЛЕНИЯ ДАННЫМИ СТУДЕНТОВ
+# ФУНКЦИИ УПРАВЛЕНИЯ ДАННЫМИ
 # ============================================================================
 
 def cache_student_info(student_id: int, name: str, grade: str):
     """Кешировать данные в памяти + сохранить в файл"""
     STUDENT_CACHE[student_id] = {"name": name, "grade": grade}
+
     students = load_json(STUDENTS_FILE)
     students[str(student_id)] = {"name": name, "grade": grade}
+
     save_json(STUDENTS_FILE, students)
     print(f"✅ Кешировано и сохранено: {name} ({grade}) - ID: {student_id}")
 
 def get_student_info_from_any_source(student_id: int) -> Optional[Dict]:
-    """
-    Получить данные ученика из ЛЮБОГО источника по приоритету:
-    1. Кеш в памяти
-    2. students.json файл
-    3. confirmed lessons (уже подтвержденные занятия)
-    4. pending requests (ожидающие подтверждения)
-    """
-    
-    # Вариант 1: Кеш в памяти
+    """Получить данные ученика из ЛЮБОГО источника по приоритету"""
+
     if student_id in STUDENT_CACHE:
         info = STUDENT_CACHE[student_id]
         print(f"✅ Найдено в памяти: {info['name']} ({info['grade']}) - ID: {student_id}")
         return info
 
-    # Вариант 2: students.json файл
     students = load_json(STUDENTS_FILE)
     if str(student_id) in students:
         info = students[str(student_id)]
@@ -395,24 +398,24 @@ def get_student_info_from_any_source(student_id: int) -> Optional[Dict]:
         print(f"✅ Найдено в students.json: {info['name']} ({info['grade']}) - ID: {student_id}")
         return info
 
-    # Вариант 3: Из confirmed lessons (уже подтвержденные)
     confirmed = load_json(CONFIRMED_FILE)
     for lesson_id, lesson in confirmed.items():
         if lesson.get("student_id") == student_id:
             name = lesson.get("student_name", "")
             grade = lesson.get("student_class", "")
+
             if name and grade:
                 info = {"name": name, "grade": grade}
                 cache_student_info(student_id, name, grade)
                 print(f"✅ Восстановлено из confirmed lessons: {name} ({grade}) - ID: {student_id}")
                 return info
 
-    # Вариант 4: Из pending requests (ожидающие подтверждения)
     pending = load_json(PENDING_FILE)
     for req_id, req in pending.items():
         if req.get("student_id") == student_id:
             name = req.get("student_name", "")
             grade = req.get("student_class", "")
+
             if name and grade:
                 info = {"name": name, "grade": grade}
                 cache_student_info(student_id, name, grade)
@@ -436,6 +439,7 @@ def get_week_dates(start_date: datetime = None) -> Dict:
         start_date = datetime.now()
 
     current_weekday = start_date.weekday()
+
     if current_weekday == 6:
         week_start = start_date + timedelta(days=1)
     else:
@@ -444,6 +448,7 @@ def get_week_dates(start_date: datetime = None) -> Dict:
 
     days_map = {0: "Monday", 1: "Tuesday", 2: "Wednesday",
                 3: "Thursday", 4: "Friday", 5: "Saturday"}
+
     days_ru = {
         "Monday": "Понедельник",
         "Tuesday": "Вторник",
@@ -454,6 +459,7 @@ def get_week_dates(start_date: datetime = None) -> Dict:
     }
 
     week = {}
+
     for offset in range(6):
         date = week_start + timedelta(days=offset)
         day_name = days_map[date.weekday()]
@@ -463,8 +469,9 @@ def get_week_dates(start_date: datetime = None) -> Dict:
     return week
 
 def get_booked_times() -> Dict[str, bool]:
-    """Получить все забронированные времена по датам и времени (ключ: YYYY-MM-DD_HH:MM)"""
+    """Получить все забронированные времена по датам и времени"""
     booked: Dict[str, bool] = {}
+
     confirmed = load_json(CONFIRMED_FILE)
 
     for lesson_id, lesson in confirmed.items():
@@ -474,6 +481,7 @@ def get_booked_times() -> Dict[str, bool]:
             date_str = lesson_datetime.strftime("%Y-%m-%d")
             key = f"{date_str}_{lesson_time}"
             booked[key] = True
+
         except Exception as e:
             print(f"⚠️ Ошибка при обработке confirmed lesson {lesson_id}: {e}")
             continue
@@ -483,6 +491,7 @@ def get_booked_times() -> Dict[str, bool]:
 def is_time_slot_booked(day_name: str, time_str: str) -> bool:
     """Проверить, занято ли время на конкретный день текущей недели"""
     week = get_week_dates()
+
     if day_name not in week:
         return True
 
@@ -491,20 +500,22 @@ def is_time_slot_booked(day_name: str, time_str: str) -> bool:
     key = f"{date_str}_{time_str}"
 
     booked = get_booked_times()
+
     return key in booked
 
 def get_available_times(day_name: str, schedule: Dict) -> List[str]:
-    """Получить доступные времена для дня (исключая забронированные)"""
+    """Получить доступные времена для дня"""
     all_times = schedule.get(day_name, [])
+
     if not all_times:
         return []
 
     available = [time for time in all_times if not is_time_slot_booked(day_name, time)]
+
     return available
 
 def create_request_id():
     """Создать уникальный ID запроса"""
-    import uuid
     return str(uuid.uuid4())[:8]
 
 def parse_time(time_str: str) -> tuple:
@@ -512,15 +523,21 @@ def parse_time(time_str: str) -> tuple:
     parts = time_str.split(":")
     return int(parts[0]), int(parts[1])
 
+# 🔧 ИСПРАВЛЕННАЯ ФУНКЦИЯ: Добавляем часовой пояс при создании datetime
 def get_lesson_datetime(day_name: str, time_str: str) -> Optional[datetime]:
-    """Получить datetime для занятия"""
+    """Получить datetime для занятия с правильным часовым поясом MSK"""
     week = get_week_dates()
+
     if day_name not in week:
         return None
 
     date_obj, _ = week[day_name]
     hour, minute = parse_time(time_str)
-    return date_obj.replace(hour=hour, minute=minute, second=0, microsecond=0)
+
+    dt = date_obj.replace(hour=hour, minute=minute, second=0, microsecond=0)
+
+    # 🔧 ИСПРАВЛЕНИЕ: Добавляем часовой пояс MSK (UTC+3)
+    return dt.replace(tzinfo=MSK_TIMEZONE)
 
 def get_student_lessons(student_id: int) -> Dict:
     """Получить подтвержденные занятия ученика"""
@@ -533,13 +550,16 @@ def get_tutor_lessons() -> Dict:
     week = get_week_dates()
 
     tutor_lessons = {}
+
     for lesson_id, lesson in confirmed.items():
         try:
             lesson_date = datetime.fromisoformat(lesson["lesson_datetime"])
             week_start = week["Monday"][0]
             week_end = week["Saturday"][0] + timedelta(days=1)
+
             if week_start <= lesson_date < week_end:
                 tutor_lessons[lesson_id] = lesson
+
         except:
             pass
 
@@ -564,6 +584,7 @@ def format_student_schedule_message(lessons: Dict) -> str:
             message += f"📅 {date_str} в {time_str}\n"
             message += f" Предмет: {subject}\n"
             message += f" Статус: ✅ Подтверждено\n\n"
+
         except:
             pass
 
@@ -590,6 +611,7 @@ def format_tutor_schedule_message(lessons: Dict) -> str:
             message += f" Ученик: {student_name}\n"
             message += f" Предмет: {subject}\n"
             message += f" Статус: ✅ Подтверждено\n\n"
+
         except:
             pass
 
@@ -598,6 +620,7 @@ def format_tutor_schedule_message(lessons: Dict) -> str:
 def parse_time_input(text: str) -> Optional[Tuple[int, int]]:
     """Парсить ввод времени от пользователя"""
     text = text.strip()
+
     if text.lower() in ['нет', 'no', '-', 'skip']:
         return None
 
@@ -612,6 +635,7 @@ def parse_time_input(text: str) -> Optional[Tuple[int, int]]:
 
         if 0 <= h < 24 and 0 <= m < 60:
             return (h, m)
+
     except:
         pass
 
@@ -620,12 +644,15 @@ def parse_time_input(text: str) -> Optional[Tuple[int, int]]:
 def generate_time_slots(start_hour: int, start_minute: int) -> List[str]:
     """Сгенерировать слоты времени"""
     slots = []
+
     current_hour = start_hour
     current_minute = start_minute
+
     max_minutes = MAX_WORK_HOUR * 60 + MAX_WORK_MINUTE
 
     while True:
         current_minutes = current_hour * 60 + current_minute
+
         if current_minutes > max_minutes or current_hour >= 24:
             break
 
@@ -633,6 +660,7 @@ def generate_time_slots(start_hour: int, start_minute: int) -> List[str]:
         slots.append(time_str)
 
         current_minute += SLOT_DURATION
+
         if current_minute >= 60:
             current_hour += current_minute // 60
             current_minute = current_minute % 60
@@ -642,6 +670,7 @@ def generate_time_slots(start_hour: int, start_minute: int) -> List[str]:
 def format_schedule_for_preview(schedule_dict: Dict) -> str:
     """Форматировать расписание для превью"""
     message = "📋 Ваше расписание:\n\n"
+
     for day_name in ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"]:
         day_ru = DAYS_RU.get(day_name, day_name)
         times = schedule_dict.get(day_name, [])
@@ -660,6 +689,8 @@ def format_schedule_for_preview(schedule_dict: Dict) -> str:
 # ============================================================================
 # ОБРАБОТЧИКИ СООБЩЕНИЙ
 # ============================================================================
+
+router = Dispatcher()
 
 async def start_handler(message: types.Message):
     user_id = message.from_user.id
@@ -708,6 +739,7 @@ async def first_lesson_handler(callback: types.CallbackQuery, state: FSMContext)
 
 async def first_lesson_name_handler(message: types.Message, state: FSMContext):
     name = message.text.strip()
+
     if len(name) < 2:
         await message.answer("❌ Пожалуйста, введите корректное имя (минимум 2 буквы)")
         return
@@ -724,6 +756,7 @@ async def first_lesson_name_handler(message: types.Message, state: FSMContext):
 
 async def first_lesson_class_handler(message: types.Message, state: FSMContext):
     class_str = message.text.strip()
+
     if not class_str:
         await message.answer("❌ Пожалуйста, введите класс")
         return
@@ -756,11 +789,14 @@ async def subject_single_handler(callback: types.CallbackQuery, state: FSMContex
     }
 
     kb = InlineKeyboardMarkup(inline_keyboard=[])
+
     for day_name in ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"]:
         times = get_available_times(day_name, schedule)
+
         if times:
             date_obj, date_str = week[day_name]
             btn_text = f"{days_ru[day_name]}, {date_str}"
+
             if current_state == FirstLessonStates.waiting_for_subject:
                 kb.inline_keyboard.append([
                     InlineKeyboardButton(text=btn_text, callback_data=f"time_{day_name}")
@@ -784,6 +820,7 @@ async def subject_single_handler(callback: types.CallbackQuery, state: FSMContex
 
 async def time_select_handler(callback: types.CallbackQuery, state: FSMContext):
     day_name = callback.data.replace("time_", "")
+
     schedule = load_json(SCHEDULE_FILE)
 
     if not schedule:
@@ -812,6 +849,7 @@ async def confirm_time_handler(callback: types.CallbackQuery, state: FSMContext,
     time_str = "_".join(parts[3:])
 
     data = await state.get_data()
+
     student_name = data.get("student_name", "Гость")
     student_class = data.get("class_grade", "")
     subject = data.get("subject", "")
@@ -877,6 +915,7 @@ async def confirm_time_handler(callback: types.CallbackQuery, state: FSMContext,
 
 async def confirm_request_handler(callback: types.CallbackQuery, bot: Bot):
     request_id = callback.data.replace("confirm_", "")
+
     pending = load_json(PENDING_FILE)
 
     if request_id not in pending:
@@ -894,7 +933,6 @@ async def confirm_request_handler(callback: types.CallbackQuery, bot: Bot):
     cache_student_info(student_id, student_name, student_class)
 
     confirmed = load_json(CONFIRMED_FILE)
-
     lesson_id = create_request_id()
 
     confirmed[lesson_id] = {
@@ -940,6 +978,7 @@ async def confirm_request_handler(callback: types.CallbackQuery, bot: Bot):
 
 async def reject_request_handler(callback: types.CallbackQuery, bot: Bot):
     request_id = callback.data.replace("reject_", "")
+
     pending = load_json(PENDING_FILE)
 
     if request_id not in pending:
@@ -947,7 +986,6 @@ async def reject_request_handler(callback: types.CallbackQuery, bot: Bot):
         return
 
     request = pending[request_id]
-
     student_id = request["student_id"]
     student_name = request["student_name"]
 
@@ -975,6 +1013,7 @@ async def reject_request_handler(callback: types.CallbackQuery, bot: Bot):
 
 async def repeat_lesson_handler(callback: types.CallbackQuery, state: FSMContext):
     student_id = callback.from_user.id
+
     lessons = get_student_lessons(student_id)
 
     if not lessons:
@@ -1003,6 +1042,7 @@ async def repeat_lesson_handler(callback: types.CallbackQuery, state: FSMContext
 
 async def repeat_time_select_handler(callback: types.CallbackQuery, state: FSMContext):
     day_name = callback.data.replace("repeat_time_", "")
+
     schedule = load_json(SCHEDULE_FILE)
 
     if not schedule:
@@ -1123,6 +1163,7 @@ async def reschedule_lesson_handler(callback: types.CallbackQuery, state: FSMCon
 
 async def reschedule_pick_handler(callback: types.CallbackQuery, state: FSMContext):
     lesson_id = callback.data.replace("reschedule_pick_", "")
+
     confirmed = load_json(CONFIRMED_FILE)
 
     if lesson_id not in confirmed:
@@ -1149,11 +1190,14 @@ async def reschedule_pick_handler(callback: types.CallbackQuery, state: FSMConte
     }
 
     kb = InlineKeyboardMarkup(inline_keyboard=[])
+
     for day_name in ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"]:
         times = get_available_times(day_name, schedule)
+
         if times:
             date_obj, date_str = week[day_name]
             btn_text = f"{days_ru[day_name]}, {date_str}"
+
             kb.inline_keyboard.append([
                 InlineKeyboardButton(text=btn_text, callback_data=f"reschedule_day_{day_name}")
             ])
@@ -1169,6 +1213,7 @@ async def reschedule_pick_handler(callback: types.CallbackQuery, state: FSMConte
 
 async def reschedule_day_handler(callback: types.CallbackQuery, state: FSMContext):
     day_name = callback.data.replace("reschedule_day_", "")
+
     schedule = load_json(SCHEDULE_FILE)
 
     if not schedule:
@@ -1197,6 +1242,7 @@ async def reschedule_confirm_handler(callback: types.CallbackQuery, state: FSMCo
     time_str = "_".join(parts[3:])
 
     data = await state.get_data()
+
     lesson_id = data.get("reschedule_lesson_id")
     subject = data.get("reschedule_subject")
     student_id = callback.from_user.id
@@ -1210,13 +1256,17 @@ async def reschedule_confirm_handler(callback: types.CallbackQuery, state: FSMCo
     if not student_info:
         confirmed = load_json(CONFIRMED_FILE)
         lesson = confirmed.get(lesson_id, {})
+
         student_name = lesson.get("student_name", "Ученик")
         student_class = lesson.get("student_class", "")
+
         print(f"⚠️ ВНИМАНИЕ: данные {student_id} восстановлены из lessons: {student_name} ({student_class})")
         cache_student_info(student_id, student_name, student_class)
+
     else:
         student_name = student_info["name"]
         student_class = student_info["grade"]
+
         print(f"✅ Загружены данные для переноса: {student_name} ({student_class}) - ID: {student_id}")
 
     new_lesson_datetime = get_lesson_datetime(day_name, time_str)
@@ -1226,6 +1276,7 @@ async def reschedule_confirm_handler(callback: types.CallbackQuery, state: FSMCo
         return
 
     reschedule_id = create_request_id()
+
     pending_reschedules = load_json(PENDING_RESCHEDULES_FILE)
 
     pending_reschedules[reschedule_id] = {
@@ -1273,6 +1324,7 @@ async def reschedule_confirm_handler(callback: types.CallbackQuery, state: FSMCo
 
 async def confirm_reschedule_handler(callback: types.CallbackQuery, bot: Bot):
     reschedule_id = callback.data.replace("confirm_reschedule_", "")
+
     pending_reschedules = load_json(PENDING_RESCHEDULES_FILE)
 
     if reschedule_id not in pending_reschedules:
@@ -1313,8 +1365,6 @@ async def confirm_reschedule_handler(callback: types.CallbackQuery, bot: Bot):
     await bot.send_message(
         student_id,
         f"✅ Ваш запрос на перенос подтвержден!\n\n"
-        f"👤 Ученик: {student_name}\n"
-        f"📚 Класс: {student_class}\n"
         f"📅 Новая дата: {date_str}\n"
         f"⏰ Новое время: {time_str}\n"
         f"📖 Предмет: {subject}",
@@ -1332,6 +1382,7 @@ async def confirm_reschedule_handler(callback: types.CallbackQuery, bot: Bot):
 
 async def reject_reschedule_handler(callback: types.CallbackQuery, bot: Bot):
     reschedule_id = callback.data.replace("reject_reschedule_", "")
+
     pending_reschedules = load_json(PENDING_RESCHEDULES_FILE)
 
     if reschedule_id not in pending_reschedules:
@@ -1386,6 +1437,7 @@ async def cancel_lesson_handler(callback: types.CallbackQuery, state: FSMContext
 
 async def cancel_pick_handler(callback: types.CallbackQuery, state: FSMContext, bot: Bot):
     lesson_id = callback.data.replace("cancel_pick_", "")
+
     confirmed = load_json(CONFIRMED_FILE)
 
     if lesson_id not in confirmed:
@@ -1401,13 +1453,16 @@ async def cancel_pick_handler(callback: types.CallbackQuery, state: FSMContext, 
     if not student_info:
         student_name = lesson.get("student_name", "Ученик")
         student_class = lesson.get("student_class", "")
+
         print(f"⚠️ ВНИМАНИЕ: данные {student_id} восстановлены из lessons: {student_name} ({student_class})")
         cache_student_info(student_id, student_name, student_class)
+
     else:
         student_name = student_info["name"]
         student_class = student_info["grade"]
 
     cancel_id = create_request_id()
+
     pending_cancels = load_json(PENDING_CANCELS_FILE)
 
     pending_cancels[cancel_id] = {
@@ -1455,6 +1510,7 @@ async def cancel_pick_handler(callback: types.CallbackQuery, state: FSMContext, 
 
 async def confirm_cancel_handler(callback: types.CallbackQuery, bot: Bot):
     cancel_id = callback.data.replace("confirm_cancel_", "")
+
     pending_cancels = load_json(PENDING_CANCELS_FILE)
 
     if cancel_id not in pending_cancels:
@@ -1496,6 +1552,7 @@ async def confirm_cancel_handler(callback: types.CallbackQuery, bot: Bot):
 
 async def reject_cancel_handler(callback: types.CallbackQuery, bot: Bot):
     cancel_id = callback.data.replace("reject_cancel_", "")
+
     pending_cancels = load_json(PENDING_CANCELS_FILE)
 
     if cancel_id not in pending_cancels:
@@ -1531,7 +1588,9 @@ async def reject_cancel_handler(callback: types.CallbackQuery, bot: Bot):
 
 async def back_to_menu_handler(callback: types.CallbackQuery, state: FSMContext):
     await state.clear()
+
     user_id = callback.from_user.id
+
     await callback.message.edit_text("📌 Главное меню", reply_markup=main_menu_keyboard(user_id))
     await callback.answer()
 
@@ -1557,13 +1616,15 @@ async def interactive_day_select_handler(callback: types.CallbackQuery, state: F
 
 async def interactive_save_handler(callback: types.CallbackQuery, state: FSMContext):
     data = await state.get_data()
+
     interactive_schedule = data.get("interactive_schedule", {})
 
     print(f"📊 Сохраняю расписание: {interactive_schedule}")
+
     save_json(SCHEDULE_FILE, interactive_schedule)
 
-    # ✅ ИСПРАВЛЕННАЯ проверка сохранения
     verification = load_json(SCHEDULE_FILE)
+
     print(f"📊 Проверка: {verification}")
 
     await callback.message.edit_text(
@@ -1584,8 +1645,10 @@ async def interactive_time_input_handler(message: types.Message, state: FSMConte
         return
 
     data = await state.get_data()
+
     day_name = data.get("current_day")
     day_ru = DAYS_RU.get(day_name, day_name)
+
     interactive_schedule = data.get("interactive_schedule", {})
 
     if not day_name:
@@ -1600,12 +1663,18 @@ async def interactive_time_input_handler(message: types.Message, state: FSMConte
 
     if time_input is None:
         interactive_schedule[day_name] = "нет"
+
         message_text = f"❌ На {day_ru} теперь нет занятий"
+
     else:
         start_h, start_m = time_input
+
         slots = generate_time_slots(start_h, start_m)
+
         interactive_schedule[day_name] = slots
+
         slots_str = ", ".join(slots)
+
         message_text = f"✅ Для {day_ru} установлены слоты:\n{slots_str}"
 
     print(f"📊 {interactive_schedule}")
@@ -1615,19 +1684,25 @@ async def interactive_time_input_handler(message: types.Message, state: FSMConte
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📅 Понедельник", callback_data="iday_Monday"),
          InlineKeyboardButton(text="📅 Вторник", callback_data="iday_Tuesday")],
+
         [InlineKeyboardButton(text="📅 Среда", callback_data="iday_Wednesday"),
          InlineKeyboardButton(text="📅 Четверг", callback_data="iday_Thursday")],
+
         [InlineKeyboardButton(text="📅 Пятница", callback_data="iday_Friday"),
          InlineKeyboardButton(text="📅 Суббота", callback_data="iday_Saturday")],
+
         [InlineKeyboardButton(text="✅ Сохранить расписание", callback_data="save_schedule")],
+
         [InlineKeyboardButton(text="⬅️ В главное меню", callback_data="back_to_menu")]
     ])
 
     await message.answer(message_text, reply_markup=kb, parse_mode="HTML")
+
     await state.set_state(InteractiveScheduleStates.choosing_day)
 
 async def edit_schedule_button_handler(callback: types.CallbackQuery, state: FSMContext):
     current_schedule = load_json(SCHEDULE_FILE) or DEFAULT_SCHEDULE
+
     print(f"📊 {current_schedule}")
 
     await state.update_data(interactive_schedule=current_schedule.copy(), edited_days={})
@@ -1635,11 +1710,15 @@ async def edit_schedule_button_handler(callback: types.CallbackQuery, state: FSM
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📅 Понедельник", callback_data="iday_Monday"),
          InlineKeyboardButton(text="📅 Вторник", callback_data="iday_Tuesday")],
+
         [InlineKeyboardButton(text="📅 Среда", callback_data="iday_Wednesday"),
          InlineKeyboardButton(text="📅 Четверг", callback_data="iday_Thursday")],
+
         [InlineKeyboardButton(text="📅 Пятница", callback_data="iday_Friday"),
          InlineKeyboardButton(text="📅 Суббота", callback_data="iday_Saturday")],
+
         [InlineKeyboardButton(text="✅ Сохранить расписание", callback_data="save_schedule")],
+
         [InlineKeyboardButton(text="⬅️ В главное меню", callback_data="back_to_menu")]
     ])
 
@@ -1654,16 +1733,21 @@ async def edit_schedule_button_handler(callback: types.CallbackQuery, state: FSM
 
 async def back_to_schedule_menu_handler(callback: types.CallbackQuery, state: FSMContext):
     data = await state.get_data()
+
     interactive_schedule = data.get("interactive_schedule", {})
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📅 Понедельник", callback_data="iday_Monday"),
          InlineKeyboardButton(text="📅 Вторник", callback_data="iday_Tuesday")],
+
         [InlineKeyboardButton(text="📅 Среда", callback_data="iday_Wednesday"),
          InlineKeyboardButton(text="📅 Четверг", callback_data="iday_Thursday")],
+
         [InlineKeyboardButton(text="📅 Пятница", callback_data="iday_Friday"),
          InlineKeyboardButton(text="📅 Суббота", callback_data="iday_Saturday")],
+
         [InlineKeyboardButton(text="✅ Сохранить расписание", callback_data="save_schedule")],
+
         [InlineKeyboardButton(text="⬅️ В главное меню", callback_data="back_to_menu")]
     ])
 
@@ -1694,7 +1778,6 @@ async def run_http_server():
         app.router.add_get('/health', health_handler)
 
         print("✅ HTTP application created")
-
         print(f"🌐 Starting HTTP server on 0.0.0.0:{PORT}...")
 
         runner = web.AppRunner(app)
@@ -1706,9 +1789,11 @@ async def run_http_server():
         print("=" * 70)
         print("BOT IS READY")
         print("=" * 70)
+
         sys.stdout.flush()
 
         await asyncio.sleep(float('inf'))
+
     except Exception as e:
         print(f"❌ ERROR: HTTP server error: {e}")
         import traceback
@@ -1730,8 +1815,10 @@ async def keep_alive_task():
                     async with session.get(f'{RENDER_URL}/health', timeout=5) as resp:
                         if resp.status == 200:
                             print(f"✅ Keep-alive ping: {datetime.now().strftime('%H:%M:%S')}")
+
                 except Exception as e:
                     print(f"⚠️ Keep-alive: {e}")
+
         except Exception as e:
             print(f"⚠️ Keep-alive task error: {e}")
             await asyncio.sleep(60)
@@ -1754,7 +1841,6 @@ async def start_bot():
             dp = Dispatcher(storage=storage)
 
             print("✅ Dispatcher created")
-
             print("📝 Registering handlers...")
 
             # Сообщения
@@ -1793,6 +1879,7 @@ async def start_bot():
 
             print("✅ Handlers registered")
             print("⏳ Waiting for messages from Telegram...")
+
             sys.stdout.flush()
 
             retry_count = 0
@@ -1801,7 +1888,6 @@ async def start_bot():
             asyncio.create_task(send_reminders(bot))
             asyncio.create_task(send_daily_schedule(bot))
             asyncio.create_task(cleanup_task(bot))
-
             asyncio.create_task(keep_alive_task())
 
             await dp.start_polling(bot, skip_updates=True, handle_signals=False)
@@ -1814,51 +1900,61 @@ async def start_bot():
                 wait_time = min(10 * (2 ** retry_count), 600)
 
                 print(f"⚠️ Telegram: Conflict! Повтор {retry_count}/{max_retries} через {wait_time} сек...")
+
                 sys.stdout.flush()
 
                 await asyncio.sleep(wait_time)
                 continue
 
             print(f"❌ ERROR: Bot error: {e}")
+
             import traceback
             traceback.print_exc()
 
             await asyncio.sleep(5)
             continue
 
-        if retry_count >= max_retries:
-            print(f"❌ КРИТИЧЕСКАЯ ОШИБКА: {max_retries} попыток не удалось подключиться")
-            sys.exit(1)
+    if retry_count >= max_retries:
+        print(f"❌ КРИТИЧЕСКАЯ ОШИБКА: {max_retries} попыток не удалось подключиться")
+        sys.exit(1)
 
 async def main():
     print("=" * 70)
-    print("INITIALIZING APPLICATION - COMPLETE SYSTEM FIXED DATA PERSISTENCE v7")
+    print("INITIALIZING APPLICATION - FIXED TIMEZONE SUPPORT")
     print("=" * 70)
     print()
+
     print(f"🔌 Port: {PORT}")
     print(f"🔐 Token: {'✅ OK' if TOKEN else '❌ NOT SET'}")
     print(f"🌐 Render URL: {RENDER_URL if RENDER_URL else '❌ NOT SET'}")
     print(f"⏰ Max work hour: {MAX_WORK_HOUR}:00")
     print(f"⏳ Slot duration: {SLOT_DURATION} minutes")
+    print(f"🕐 Timezone: MSK (UTC+3)")
     print("=" * 70)
+
     sys.stdout.flush()
 
-    # Управление lock файлом
     lockfile = Path('./.botrunning.lock')
 
     if lockfile.exists():
         print("⚠️ Обнаружена старая блокировка. Попытка удаления...")
+
         try:
             lockfile.unlink()
+
         except Exception as e:
             print(f"⚠️ Warning: Could not delete old lock file: {e}")
 
     lockfile.write_text(str(os.getpid()))
+
     print(f"✅ Lock file created: {lockfile}")
 
     print("\n🧹 Performing startup cleanup...")
+
     cleanup_stale_requests()
+
     print("✅ Startup cleanup completed\n")
+
     sys.stdout.flush()
 
     try:
@@ -1866,17 +1962,21 @@ async def main():
             run_http_server(),
             start_bot()
         )
+
     except KeyboardInterrupt:
         print("⏸ Application interrupted by user")
+
     except Exception as e:
         print(f"❌ ERROR: Main thread error: {e}")
+
         import traceback
         traceback.print_exc()
+
     finally:
         if lockfile.exists():
             try:
                 lockfile.unlink()
-                print("✅ Lock file removed")
+
             except:
                 pass
 
@@ -1885,9 +1985,13 @@ async def main():
 if __name__ == '__main__':
     try:
         asyncio.run(main())
+
     except KeyboardInterrupt:
         print("🛑 Bot stopped")
+
     except Exception as e:
         print(f"❌ ERROR: Main thread error: {e}")
+
         import traceback
         traceback.print_exc()
+
