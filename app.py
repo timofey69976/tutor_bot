@@ -270,22 +270,60 @@ async def send_daily_schedule(bot: Bot):
             if now.hour == 8 and 0 <= now.minute < 5:
                 print(f"📅 Отправляю расписание в {now.strftime('%H:%M:%S')}")
 
-                lessons = get_tutor_lessons()
+                # Получаем все занятия на неделю
+                all_lessons = get_tutor_lessons()
 
-                if lessons:
-                    message = f"📚 Расписание на сегодня:\n\n"
-                    sorted_lessons = sorted(lessons.values(), key=lambda x: x.get("lesson_datetime", ""))
+                # Фильтруем только сегодняшние занятия
+                today_date = now.date()
+                today_lessons = {}
+
+                for lesson_id, lesson in all_lessons.items():
+                    try:
+                        lesson_datetime = datetime.fromisoformat(lesson["lesson_datetime"])
+                        if lesson_datetime.tzinfo is None:
+                            lesson_datetime = lesson_datetime.replace(tzinfo=MSK_TIMEZONE)
+
+                        # Проверяем, что занятие сегодня
+                        if lesson_datetime.date() == today_date:
+                            today_lessons[lesson_id] = lesson
+                    except:
+                        pass
+
+                if today_lessons:
+                    # Получаем название дня недели на русском
+                    weekday_names = {
+                        0: "Понедельник",
+                        1: "Вторник", 
+                        2: "Среда",
+                        3: "Четверг",
+                        4: "Пятница",
+                        5: "Суббота",
+                        6: "Воскресенье"
+                    }
+                    day_name = weekday_names.get(now.weekday(), "")
+
+                    message = f"📚 Расписание на сегодня
+{day_name}, {now.strftime('%d.%m.%Y')}
+
+"
+
+                    # Сортируем занятия по времени
+                    sorted_lessons = sorted(today_lessons.values(), key=lambda x: x.get("lesson_datetime", ""))
 
                     for lesson in sorted_lessons:
                         try:
                             lesson_date = datetime.fromisoformat(lesson["lesson_datetime"])
-                            # Если время без часового пояса, добавляем MSK
                             if lesson_date.tzinfo is None:
                                 lesson_date = lesson_date.replace(tzinfo=MSK_TIMEZONE)
+
                             time_str = lesson_date.strftime("%H:%M")
                             student_name = lesson.get("student_name", "Неизвестный ученик")
+                            student_class = lesson.get("student_class", "")
                             subject = lesson.get("subject", "Неизвестный предмет")
-                            message += f"⏰ {time_str} - {student_name} ({subject})\n"
+
+                            # Формат: 16:00 - Коля, 8 класс, математика
+                            message += f"{time_str} - {student_name}, {student_class}, {subject}
+"
                         except:
                             pass
                 else:
