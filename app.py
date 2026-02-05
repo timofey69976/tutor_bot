@@ -251,7 +251,7 @@ async def send_reminders(bot: Bot):
             await asyncio.sleep(60)
 
 async def send_daily_schedule(bot: Bot):
-    """Отправлять ежедневное расписание репетитору в 8:00 с занятиями только на сегодня"""
+    """✅ ИСПРАВЛЕНО: Отправлять ежедневное расписание репетитору в 8:00 с занятиями только на сегодня"""
     await asyncio.sleep(120)
     
     while True:
@@ -267,7 +267,7 @@ async def send_daily_schedule(bot: Bot):
                 
                 # ✅ ИСПРАВЛЕНО: Фильтруем только сегодняшние занятия
                 today_date = now.date()
-                today_lessons = {}
+                today_lessons = []
                 
                 for lesson_id, lesson in all_lessons.items():
                     try:
@@ -278,9 +278,12 @@ async def send_daily_schedule(bot: Bot):
                         
                         # Проверяем, что занятие сегодня
                         if lesson_datetime.date() == today_date:
-                            today_lessons[lesson_id] = lesson
-                    except:
-                        pass
+                            today_lessons.append((lesson_datetime, lesson))
+                    except Exception as e:
+                        print(f"⚠️ Ошибка при обработке занятия {lesson_id}: {e}")
+                
+                # Сортируем занятия по времени
+                today_lessons.sort(key=lambda x: x[0])
                 
                 # Получаем название дня недели на русском
                 weekday_names = {
@@ -298,26 +301,13 @@ async def send_daily_schedule(bot: Bot):
                 if today_lessons:
                     message = f"📚 <b>Расписание на сегодня</b>\n\n{day_name}, {now.strftime('%d.%m.%Y')}\n\n"
                     
-                    # Сортируем занятия по времени
-                    sorted_lessons = sorted(today_lessons.values(), key=lambda x: x.get("lesson_datetime", ""))
-                    
-                    for lesson in sorted_lessons:
-                        try:
-                            lesson_date = datetime.fromisoformat(lesson.get("lesson_datetime", ""))
-                            
-                            if lesson_date.tzinfo is None:
-                                lesson_date = lesson_date.replace(tzinfo=MSK_TIMEZONE)
-                            
-                            time_str = lesson_date.strftime("%H:%M")
-                            student_name = lesson.get("student_name", "Неизвестный ученик")
-                            student_class = lesson.get("student_class", "")
-                            subject = lesson.get("subject", "Неизвестный предмет")
-                            
-                            # Формат: 16:00 - Коля, 8 класс, математика
-                            message += f"🕐 {time_str} - {student_name}, {student_class}, {subject}\n"
+                    for lesson_datetime, lesson in today_lessons:
+                        time_str = lesson_datetime.strftime("%H:%M")
+                        student_name = lesson.get("student_name", "Неизвестный ученик")
+                        student_class = lesson.get("student_class", "")
+                        subject = lesson.get("subject", "Неизвестный предмет")
                         
-                        except:
-                            pass
+                        message += f"🕐 {time_str} - {student_name}, {student_class}, {subject}\n"
                 else:
                     message = f"📭 На сегодня ({day_name}) нет занятий"
                 
@@ -403,11 +393,11 @@ def main_menu_keyboard(user_id: int):
         kb.inline_keyboard.append(
             [InlineKeyboardButton(text="🛠 Изменить расписание", callback_data="edit_schedule")]
         )
-        # ✅ НОВОЕ: Кнопка для отправки просьбы о переносе ученику
+        # ✅ ИСПРАВЛЕНО: Кнопка для отправки просьбы о переносе ученику
         kb.inline_keyboard.append(
             [InlineKeyboardButton(text="📬 Просьба о переносе", callback_data="tutor_reschedule_request")]
         )
-        # ✅ НОВОЕ: Кнопка для отправки сообщения всем ученикам
+        # ✅ ИСПРАВЛЕНО: Кнопка для отправки сообщения всем ученикам
         kb.inline_keyboard.append(
             [InlineKeyboardButton(text="📢 Уведомить всех", callback_data="broadcast_message")]
         )
@@ -596,7 +586,7 @@ def is_time_slot_booked(day_name: str, time_str: str) -> bool:
     return key in booked
 
 def get_available_times(day_name: str, schedule: Dict) -> List[str]:
-    """Получить доступные времена для дня"""
+    """✅ ИСПРАВЛЕНО: Получить доступные времена для дня"""
     all_times = schedule.get(day_name, [])
     
     # ✅ ИСПРАВЛЕНО: Если день содержит "нет", то нет доступных времен
@@ -666,7 +656,7 @@ def get_tutor_lessons() -> Dict:
     return tutor_lessons
 
 def get_all_students() -> Dict[int, Dict]:
-    """Получить всех студентов из подтвержденных занятий"""
+    """✅ НОВАЯ ФУНКЦИЯ: Получить всех студентов из подтвержденных занятий"""
     confirmed = load_json(CONFIRMED_FILE)
     students = {}
     
@@ -1266,7 +1256,7 @@ async def repeat_confirm_handler(callback: types.CallbackQuery, state: FSMContex
     await callback.answer()
 
 # ============================================================================
-# НОВОЕ: ПРОСЬБА О ПЕРЕНОСЕ ОТ РЕПЕТИТОРА
+# ✅ НОВОЕ: ПРОСЬБА О ПЕРЕНОСЕ ОТ РЕПЕТИТОРА
 # ============================================================================
 
 async def tutor_reschedule_request_handler(callback: types.CallbackQuery, state: FSMContext):
@@ -1329,7 +1319,6 @@ async def tutor_reschedule_pick_handler(callback: types.CallbackQuery, state: FS
     
     kb = InlineKeyboardMarkup(inline_keyboard=[])
     
-    # ✅ ИСПРАВЛЕНО: Показываем только дни с доступными временами
     for day_name in ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"]:
         times = get_available_times(day_name, schedule)
         
@@ -1417,7 +1406,7 @@ async def tutor_reschedule_confirm_handler(callback: types.CallbackQuery, state:
     lesson_date_str = new_lesson_datetime.strftime("%d.%m.%Y")
     lesson_time_str = new_lesson_datetime.strftime("%H:%M")
     
-    # ✅ НОВОЕ: Отправляем просьбу ученику о переносе
+    # Отправляем просьбу ученику о переносе
     kb_student = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✅ Согласен", callback_data=f"student_reschedule_agree_{reschedule_id}")],
         [InlineKeyboardButton(text="❌ Не согласен", callback_data=f"student_reschedule_decline_{reschedule_id}")]
@@ -1542,7 +1531,7 @@ async def student_reschedule_decline_handler(callback: types.CallbackQuery, bot:
     await callback.answer("❌ Вы отклонили просьбу")
 
 # ============================================================================
-# НОВОЕ: УВЕДОМЛЕНИЕ ВСЕХ УЧЕНИКОВ
+# ✅ НОВОЕ: УВЕДОМЛЕНИЕ ВСЕХ УЧЕНИКОВ
 # ============================================================================
 
 async def broadcast_message_handler(callback: types.CallbackQuery, state: FSMContext):
@@ -1662,7 +1651,6 @@ async def reschedule_pick_handler(callback: types.CallbackQuery, state: FSMConte
     
     kb = InlineKeyboardMarkup(inline_keyboard=[])
     
-    # ✅ ИСПРАВЛЕНО: Показываем только дни с доступными временами
     for day_name in ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"]:
         times = get_available_times(day_name, schedule)
         
@@ -2337,7 +2325,7 @@ async def start_bot():
             dp.callback_query.register(confirm_request_handler, F.data.startswith("confirm_") & ~F.data.startswith("confirm_reschedule_") & ~F.data.startswith("confirm_cancel_"))
             dp.callback_query.register(reject_request_handler, F.data.startswith("reject_") & ~F.data.startswith("reject_reschedule_") & ~F.data.startswith("reject_cancel_"))
             
-            # ✅ НОВОЕ: Обработчики для просьбы о переносе от репетитора
+            # ✅ ИСПРАВЛЕНО: Обработчики для просьбы о переносе от репетитора
             dp.callback_query.register(tutor_reschedule_request_handler, F.data == "tutor_reschedule_request")
             dp.callback_query.register(tutor_reschedule_pick_handler, F.data.startswith("tutor_reschedule_pick_"))
             dp.callback_query.register(tutor_reschedule_day_handler, F.data.startswith("tutor_reschedule_day_"))
@@ -2345,7 +2333,7 @@ async def start_bot():
             dp.callback_query.register(student_reschedule_agree_handler, F.data.startswith("student_reschedule_agree_"))
             dp.callback_query.register(student_reschedule_decline_handler, F.data.startswith("student_reschedule_decline_"))
             
-            # ✅ НОВОЕ: Обработчик для отправки сообщения всем
+            # ✅ ИСПРАВЛЕНО: Обработчик для отправки сообщения всем
             dp.callback_query.register(broadcast_message_handler, F.data == "broadcast_message")
             
             print("✅ Handlers registered")
@@ -2448,4 +2436,3 @@ if __name__ == '__main__':
         print(f"❌ ERROR: Main thread error: {e}")
         import traceback
         traceback.print_exc()
-
