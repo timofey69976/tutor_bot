@@ -656,19 +656,49 @@ def get_tutor_lessons() -> Dict:
     return tutor_lessons
 
 def get_all_students() -> Dict[int, Dict]:
-    """✅ НОВАЯ ФУНКЦИЯ: Получить всех студентов из подтвержденных занятий"""
-    confirmed = load_json(CONFIRMED_FILE)
-    students = {}
+    """✅ ИСПРАВЛЕНО: Получить всех, кто хотя бы раз пользовался ботом"""
+    all_students = {}
     
+    # 1. Сначала из students.json (те, кто заполнял данные)
+    students_file_data = load_json(STUDENTS_FILE)
+    for student_id_str, student_data in students_file_data.items():
+        try:
+            student_id = int(student_id_str)
+            if student_id not in all_students and student_id != TUTOR_ID:
+                all_students[student_id] = {
+                    "name": student_data.get("name", "Ученик"),
+                    "class": student_data.get("grade", "")
+                }
+        except:
+            pass
+    
+    # 2. Затем из confirmed lessons (те, у кого были занятия)
+    confirmed = load_json(CONFIRMED_FILE)
     for lesson_id, lesson in confirmed.items():
         student_id = lesson.get("student_id")
-        if student_id and student_id not in students:
-            students[student_id] = {
-                "name": lesson.get("student_name", ""),
+        if student_id and student_id not in all_students and student_id != TUTOR_ID:
+            all_students[student_id] = {
+                "name": lesson.get("student_name", "Ученик"),
                 "class": lesson.get("student_class", "")
             }
     
-    return students
+    # 3. Затем из pending requests (те, кто отправлял запросы)
+    pending = load_json(PENDING_FILE)
+    for req_id, req in pending.items():
+        student_id = req.get("student_id")
+        if student_id and student_id not in all_students and student_id != TUTOR_ID:
+            all_students[student_id] = {
+                "name": req.get("student_name", "Ученик"),
+                "class": req.get("student_class", "")
+            }
+    
+    # 4. Также из STUDENT_CACHE (те, кто есть в памяти)
+    for student_id in STUDENT_CACHE:
+        if student_id not in all_students and student_id != TUTOR_ID:
+            all_students[student_id] = STUDENT_CACHE[student_id]
+    
+    print(f"📊 Всего найдено учеников: {len(all_students)}")
+    return all_students
 
 def format_student_schedule_message(lessons: Dict) -> str:
     """Форматировать расписание ученика"""
