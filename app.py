@@ -80,7 +80,7 @@ print(f" - {SCHEDULE_FILE}")
 print(f" - {CONFIRMED_FILE}")
 print(f" - {PENDING_FILE}\n")
 
-# ✅ НОВОЕ: Глобальный кеш студентов в памяти
+# ✅ ИСПРАВЛЕНО: Теперь STUDENT_CACHE загружается из файла при запуске
 STUDENT_CACHE = {}
 
 # ✅ ИСПРАВЛЕНИЕ: Глобальный набор для отслеживания отправленных напоминаний
@@ -174,6 +174,51 @@ def cleanup_sent_reminders_list():
     
     SENT_REMINDERS = active_reminders
     print(f"🧹 Очищены старые напоминания. Активных: {len(SENT_REMINDERS)}")
+
+# ============================================================================
+# ✅ НОВОЕ: ВОССТАНОВЛЕНИЕ КЕША ИЗ ФАЙЛОВ ПРИ ЗАПУСКЕ
+# ============================================================================
+
+def restore_cache_from_files():
+    """✅ НОВАЯ ФУНКЦИЯ: Восстановить STUDENT_CACHE из всех файлов при запуске"""
+    global STUDENT_CACHE
+    
+    print("🔄 Восстанавливаю STUDENT_CACHE из файлов...")
+    
+    # 1. Из students.json
+    students_data = load_json(STUDENTS_FILE)
+    for student_id_str, student_info in students_data.items():
+        try:
+            student_id = int(student_id_str)
+            if student_id != TUTOR_ID:
+                STUDENT_CACHE[student_id] = {
+                    "name": student_info.get("name", ""),
+                    "grade": student_info.get("grade", "")
+                }
+        except:
+            pass
+    
+    # 2. Из confirmed_lessons.json
+    confirmed_data = load_json(CONFIRMED_FILE)
+    for lesson_id, lesson in confirmed_data.items():
+        student_id = lesson.get("student_id")
+        if student_id and student_id != TUTOR_ID and student_id not in STUDENT_CACHE:
+            STUDENT_CACHE[student_id] = {
+                "name": lesson.get("student_name", ""),
+                "grade": lesson.get("student_class", "")
+            }
+    
+    # 3. Из pending_requests.json
+    pending_data = load_json(PENDING_FILE)
+    for req_id, req in pending_data.items():
+        student_id = req.get("student_id")
+        if student_id and student_id != TUTOR_ID and student_id not in STUDENT_CACHE:
+            STUDENT_CACHE[student_id] = {
+                "name": req.get("student_name", ""),
+                "grade": req.get("student_class", "")
+            }
+    
+    print(f"✅ STUDENT_CACHE восстановлен: {len(STUDENT_CACHE)} записей")
 
 # ============================================================================
 # ФУНКЦИИ ОТПРАВКИ СООБЩЕНИЙ
@@ -2430,6 +2475,16 @@ async def main():
     
     print("\n🧹 Performing startup cleanup...")
     cleanup_stale_requests()
+    
+    # ✅ НОВОЕ: Восстанавливаем STUDENT_CACHE из файлов
+    restore_cache_from_files()
+    
+    print(f"✅ STUDENT_CACHE восстановлен: {len(STUDENT_CACHE)} записей")
+    
+    # Показываем содержимое файлов для отладки
+    print(f"📊 Расписание: {load_json(SCHEDULE_FILE)}")
+    print(f"📊 Подтвержденные занятия: {len(load_json(CONFIRMED_FILE))} записей")
+    print(f"📊 Ученики в students.json: {len(load_json(STUDENTS_FILE))} записей")
     
     SENT_REMINDERS.clear()
     print("🧹 Очищены старые напоминания при запуске")
