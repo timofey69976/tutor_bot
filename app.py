@@ -73,7 +73,7 @@ CONFIRMED_FILE = DATA_DIR / "confirmed_lessons.json"
 PENDING_RESCHEDULES_FILE = DATA_DIR / "pending_reschedules.json"
 PENDING_CANCELS_FILE = DATA_DIR / "pending_cancels.json"
 PENDING_TUTOR_RESCHEDULES_FILE = DATA_DIR / "pending_tutor_reschedules.json"
-MESSAGE_LOG_FILE = DATA_DIR / "message_log.json"  # ✅ НОВОЕ: для логирования сообщений
+MESSAGE_LOG_FILE = DATA_DIR / "message_log.json"
 
 print(f"📝 Files will be saved to:")
 print(f" - {STUDENTS_FILE}")
@@ -175,84 +175,6 @@ def cleanup_sent_reminders_list():
     
     SENT_REMINDERS = active_reminders
     print(f"🧹 Очищены старые напоминания. Активных: {len(SENT_REMINDERS)}")
-
-# ============================================================================
-# ✅ НОВОЕ: ФУНКЦИИ ДЛЯ УДАЛЕНИЯ СТАРЫХ СООБЩЕНИЙ
-# ============================================================================
-
-def log_message(chat_id: int, message_id: int, message_type: str = "bot"):
-    """Записать сообщение в лог для последующего удаления"""
-    message_log = load_json(MESSAGE_LOG_FILE)
-    
-    message_key = f"{chat_id}_{message_id}"
-    message_log[message_key] = {
-        "chat_id": chat_id,
-        "message_id": message_id,
-        "type": message_type,
-        "timestamp": datetime.now(tz=MSK_TIMEZONE).isoformat()
-    }
-    
-    save_json(MESSAGE_LOG_FILE, message_log)
-    print(f"📝 Записано сообщение {message_id} для чата {chat_id}")
-
-async def delete_old_messages(bot: Bot):
-    """✅ НОВАЯ ФУНКЦИЯ: Удалять старые сообщения (старше 24 часов)"""
-    await asyncio.sleep(600)  # Подождать 10 минут после запуска
-    
-    while True:
-        try:
-            now = datetime.now(tz=MSK_TIMEZONE)
-            message_log = load_json(MESSAGE_LOG_FILE)
-            
-            if not message_log:
-                await asyncio.sleep(3600)
-                continue
-            
-            deleted_count = 0
-            messages_to_delete = []
-            
-            # Находим сообщения старше 24 часов
-            for message_key, message_info in message_log.items():
-                try:
-                    msg_time = datetime.fromisoformat(message_info.get("timestamp", ""))
-                    if msg_time.tzinfo is None:
-                        msg_time = msg_time.replace(tzinfo=MSK_TIMEZONE)
-                    
-                    # Если сообщение старше 24 часов
-                    if (now - msg_time).total_seconds() > 86400:
-                        messages_to_delete.append((message_key, message_info))
-                except Exception as e:
-                    print(f"⚠️ Ошибка при обработке сообщения {message_key}: {e}")
-            
-            # Удаляем старые сообщения
-            for message_key, message_info in messages_to_delete:
-                try:
-                    chat_id = message_info.get("chat_id")
-                    message_id = message_info.get("message_id")
-                    
-                    if chat_id and message_id:
-                        await bot.delete_message(chat_id=chat_id, message_id=message_id)
-                        print(f"🗑️ Удалено сообщение {message_id} из чата {chat_id}")
-                        deleted_count += 1
-                    
-                    # Удаляем из лога
-                    del message_log[message_key]
-                
-                except Exception as e:
-                    # Если не удалось удалить (например, сообщение уже удалено), просто удаляем из лога
-                    print(f"⚠️ Не удалось удалить сообщение {message_key}: {e}")
-                    if message_key in message_log:
-                        del message_log[message_key]
-            
-            if messages_to_delete:
-                save_json(MESSAGE_LOG_FILE, message_log)
-                print(f"✅ Удалено {deleted_count} старых сообщений")
-            
-            await asyncio.sleep(3600)  # Проверяем каждый час
-        
-        except Exception as e:
-            print(f"⚠️ Ошибка в delete_old_messages: {e}")
-            await asyncio.sleep(3600)
 
 # ============================================================================
 # ✅ НОВОЕ: ВОССТАНОВЛЕНИЕ КЕША ИЗ ФАЙЛОВ ПРИ ЗАПУСКЕ
@@ -467,6 +389,84 @@ async def cleanup_task(bot: Bot):
         except Exception as e:
             print(f"⚠️ Ошибка в cleanup_task: {e}")
             await asyncio.sleep(60)
+
+# ============================================================================
+# ✅ НОВОЕ: ФУНКЦИИ ДЛЯ УДАЛЕНИЯ СТАРЫХ СООБЩЕНИЙ
+# ============================================================================
+
+def log_message(chat_id: int, message_id: int, message_type: str = "bot"):
+    """Записать сообщение в лог для последующего удаления"""
+    message_log = load_json(MESSAGE_LOG_FILE)
+    
+    message_key = f"{chat_id}_{message_id}"
+    message_log[message_key] = {
+        "chat_id": chat_id,
+        "message_id": message_id,
+        "type": message_type,
+        "timestamp": datetime.now(tz=MSK_TIMEZONE).isoformat()
+    }
+    
+    save_json(MESSAGE_LOG_FILE, message_log)
+    print(f"📝 Записано сообщение {message_id} для чата {chat_id}")
+
+async def delete_old_messages(bot: Bot):
+    """✅ НОВАЯ ФУНКЦИЯ: Удалять старые сообщения (старше 24 часов)"""
+    await asyncio.sleep(600)  # Подождать 10 минут после запуска
+    
+    while True:
+        try:
+            now = datetime.now(tz=MSK_TIMEZONE)
+            message_log = load_json(MESSAGE_LOG_FILE)
+            
+            if not message_log:
+                await asyncio.sleep(3600)
+                continue
+            
+            deleted_count = 0
+            messages_to_delete = []
+            
+            # Находим сообщения старше 24 часов
+            for message_key, message_info in message_log.items():
+                try:
+                    msg_time = datetime.fromisoformat(message_info.get("timestamp", ""))
+                    if msg_time.tzinfo is None:
+                        msg_time = msg_time.replace(tzinfo=MSK_TIMEZONE)
+                    
+                    # Если сообщение старше 24 часов
+                    if (now - msg_time).total_seconds() > 86400:
+                        messages_to_delete.append((message_key, message_info))
+                except Exception as e:
+                    print(f"⚠️ Ошибка при обработке сообщения {message_key}: {e}")
+            
+            # Удаляем старые сообщения
+            for message_key, message_info in messages_to_delete:
+                try:
+                    chat_id = message_info.get("chat_id")
+                    message_id = message_info.get("message_id")
+                    
+                    if chat_id and message_id:
+                        await bot.delete_message(chat_id=chat_id, message_id=message_id)
+                        print(f"🗑️ Удалено сообщение {message_id} из чата {chat_id}")
+                        deleted_count += 1
+                    
+                    # Удаляем из лога
+                    del message_log[message_key]
+                
+                except Exception as e:
+                    # Если не удалось удалить (например, сообщение уже удалено), просто удаляем из лога
+                    print(f"⚠️ Не удалось удалить сообщение {message_key}: {e}")
+                    if message_key in message_log:
+                        del message_log[message_key]
+            
+            if messages_to_delete:
+                save_json(MESSAGE_LOG_FILE, message_log)
+                print(f"✅ Удалено {deleted_count} старых сообщений")
+            
+            await asyncio.sleep(3600)  # Проверяем каждый час
+        
+        except Exception as e:
+            print(f"⚠️ Ошибка в delete_old_messages: {e}")
+            await asyncio.sleep(3600)
 
 # ============================================================================
 # СОСТОЯНИЯ (FSM)
@@ -2403,12 +2403,19 @@ async def health_handler(request):
 async def root_handler(request):
     return web.Response(text="Bot is running!", status=200)
 
+# ✅ НОВЫЙ легкий эндпоинт для пинга
+async def ping_handler(request):
+    """Максимально легкий эндпоинт для пинга от cron-job.org"""
+    return web.Response(text="pong", status=200)
+
 async def run_http_server():
     try:
         print("🌐 Creating HTTP application...")
         app = web.Application()
         app.router.add_get('/', root_handler)
         app.router.add_get('/health', health_handler)
+        # ✅ НОВЫЙ маршрут для пинга
+        app.router.add_get('/ping', ping_handler)
         print("✅ HTTP application created")
         
         print(f"🌐 Starting HTTP server on 0.0.0.0:{PORT}...")
