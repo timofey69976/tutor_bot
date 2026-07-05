@@ -2538,7 +2538,7 @@ async def start_bot():
             asyncio.create_task(keep_alive_task())
             asyncio.create_task(delete_old_messages(bot))  # ✅ НОВОЕ: Запускаем удаление старых сообщений
             
-            await dp.start_polling(bot, skip_updates=True, handle_signals=False)
+            await dp.start_polling(bot, skip_updates=True, handle_signals=False, polling_timeout=10)
         
         except Exception as e:
             error_msg = str(e).lower()
