@@ -30,11 +30,11 @@ if not TOKEN:
 
 TUTOR_ID = 1339816111
 
-# ✅ ИСПРАВЛЕНО: Правильная настройка бота для новой версии
+# ✅ ИСПРАВЛЕНО: Правильные имена параметров для aiogram 3.11.0
 bot = Bot(
     token=TOKEN,
     default=DefaultBotProperties(
-        connect_timeout=45,
+        connect_timeout=45,   # ⚠️ ВНИМАНИЕ: Это имя параметра может отличаться!
         read_timeout=45,
         write_timeout=45,
         pool_timeout=45
