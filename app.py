@@ -15,8 +15,7 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton
 from aiogram.filters import Command
-from aiogram.client.session.aiohttp import AiohttpSession
-from aiohttp import ClientTimeout
+from aiogram.client.default import DefaultBotProperties
 
 # ============================================================================
 # КОНФИГУРАЦИЯ И ИНИЦИАЛИЗАЦИЯ
@@ -31,13 +30,19 @@ if not TOKEN:
 
 TUTOR_ID = 1339816111
 
-# --- НАСТРОЙКА СЕТИ ---
-timeout_settings = ClientTimeout(total=45, connect=10, sock_read=45)
-session = AiohttpSession(timeout=timeout_settings)
+# ✅ ИСПРАВЛЕНО: Правильная настройка бота для новой версии
+bot = Bot(
+    token=TOKEN,
+    default=DefaultBotProperties(
+        connect_timeout=45,
+        read_timeout=45,
+        write_timeout=45,
+        pool_timeout=45
+    )
+)
 
-bot = Bot(token=TOKEN, session=session)
 storage = MemoryStorage()
-dp = Dispatcher(storage=storage)  # ЕДИНСТВЕННЫЙ диспетчер
+dp = Dispatcher(storage=storage)
 
 SUBJECTS = ["Математика", "Физика", "Химия"]
 
