@@ -2426,8 +2426,53 @@ async def start_bot():
             print("🤖 Initializing Telegram bot...")
             print("🔧 Creating bot...")
             
-            print("✅ Dispatcher created")
-            print("📝 Handlers already registered")
+            # ✅ РЕГИСТРИРУЕМ ОБРАБОТЧИКИ ЗДЕСЬ
+            print("📝 Registering handlers...")
+            
+            # Регистрация обработчиков сообщений
+            dp.message.register(start_handler, Command("start"))
+            dp.message.register(menu_button_handler, F.text == "☰ Меню")
+            dp.message.register(first_lesson_name_handler, FirstLessonStates.waiting_for_name)
+            dp.message.register(first_lesson_class_handler, FirstLessonStates.waiting_for_class)
+            dp.message.register(interactive_time_input_handler, InteractiveScheduleStates.waiting_for_start_time)
+            dp.message.register(broadcast_text_handler, BroadcastMessageStates.waiting_for_message)
+            
+            # Регистрация callback обработчиков
+            dp.callback_query.register(first_lesson_handler, F.data == "first_lesson")
+            dp.callback_query.register(repeat_lesson_handler, F.data == "repeat_lesson")
+            dp.callback_query.register(reschedule_lesson_handler, F.data == "reschedule_lesson")
+            dp.callback_query.register(cancel_lesson_handler, F.data == "cancel_lesson")
+            dp.callback_query.register(my_schedule_handler, F.data == "my_schedule")
+            dp.callback_query.register(back_to_menu_handler, F.data == "back_to_menu")
+            dp.callback_query.register(subject_single_handler, F.data.startswith("subject_single_"))
+            dp.callback_query.register(time_select_handler, F.data.startswith("time_"), FirstLessonStates.waiting_for_time)
+            dp.callback_query.register(confirm_time_handler, F.data.startswith("confirm_time_"))
+            dp.callback_query.register(repeat_time_select_handler, F.data.startswith("repeat_time_"), RepeatLessonStates.waiting_for_time)
+            dp.callback_query.register(repeat_confirm_handler, F.data.startswith("repeat_confirm_"))
+            dp.callback_query.register(reschedule_pick_handler, F.data.startswith("reschedule_pick_"), RescheduleStates.choosing_lesson)
+            dp.callback_query.register(reschedule_day_handler, F.data.startswith("reschedule_day_"))
+            dp.callback_query.register(reschedule_confirm_handler, F.data.startswith("reschedule_confirm_"))
+            dp.callback_query.register(cancel_pick_handler, F.data.startswith("cancel_pick_"), CancelLessonStates.choosing_lesson)
+            dp.callback_query.register(edit_schedule_button_handler, F.data == "edit_schedule")
+            dp.callback_query.register(interactive_day_select_handler, F.data.startswith("iday_"))
+            dp.callback_query.register(interactive_save_handler, F.data == "save_schedule")
+            dp.callback_query.register(back_to_schedule_menu_handler, F.data == "back_to_schedule_menu")
+            dp.callback_query.register(confirm_reschedule_handler, F.data.startswith("confirm_reschedule_"))
+            dp.callback_query.register(reject_reschedule_handler, F.data.startswith("reject_reschedule_"))
+            dp.callback_query.register(confirm_cancel_handler, F.data.startswith("confirm_cancel_"))
+            dp.callback_query.register(reject_cancel_handler, F.data.startswith("reject_cancel_"))
+            dp.callback_query.register(confirm_request_handler, F.data.startswith("confirm_") & ~F.data.startswith("confirm_reschedule_") & ~F.data.startswith("confirm_cancel_"))
+            dp.callback_query.register(reject_request_handler, F.data.startswith("reject_") & ~F.data.startswith("reject_reschedule_") & ~F.data.startswith("reject_cancel_"))
+            dp.callback_query.register(tutor_reschedule_request_handler, F.data == "tutor_reschedule_request")
+            dp.callback_query.register(tutor_reschedule_pick_handler, F.data.startswith("tutor_reschedule_pick_"))
+            dp.callback_query.register(tutor_reschedule_day_handler, F.data.startswith("tutor_reschedule_day_"))
+            dp.callback_query.register(tutor_reschedule_confirm_handler, F.data.startswith("tutor_reschedule_confirm_"))
+            dp.callback_query.register(student_reschedule_agree_handler, F.data.startswith("student_reschedule_agree_"))
+            dp.callback_query.register(student_reschedule_decline_handler, F.data.startswith("student_reschedule_decline_"))
+            dp.callback_query.register(broadcast_message_handler, F.data == "broadcast_message")
+            
+            print(f"✅ Зарегистрировано {len(dp.message.handlers)} message handlers")
+            print(f"✅ Зарегистрировано {len(dp.callback_query.handlers)} callback handlers")
             
             retry_count = 0
             
@@ -2441,8 +2486,8 @@ async def start_bot():
             print("⏳ Starting polling...")
             sys.stdout.flush()
             
-            # polling работает бесконечно
-            await dp.start_polling(bot, skip_updates=True, handle_signals=False, polling_timeout=10)
+            # ✅ Убираем polling_timeout (он не поддерживается в новой версии)
+            await dp.start_polling(bot, skip_updates=True, handle_signals=False)
         
         except Exception as e:
             error_msg = str(e).lower()
@@ -2464,84 +2509,3 @@ async def start_bot():
     if retry_count >= max_retries:
         print(f"❌ КРИТИЧЕСКАЯ ОШИБКА: {max_retries} попыток не удалось подключиться")
         sys.exit(1)
-
-async def main():
-    print("=" * 70)
-    print("INITIALIZING APPLICATION - FIXED VERSION")
-    print("=" * 70)
-    print()
-    
-    print(f"🔌 Port: {PORT}")
-    print(f"🔐 Token: {'✅ OK' if TOKEN else '❌ NOT SET'}")
-    print(f"🌐 Render URL: {RENDER_URL if RENDER_URL else '❌ NOT SET'}")
-    print(f"⏰ Max work hour: {MAX_WORK_HOUR}:00")
-    print(f"⏳ Slot duration: {SLOT_DURATION} minutes")
-    print(f"🕐 Timezone: MSK (UTC+3)")
-    print("=" * 70)
-    sys.stdout.flush()
-    
-    # Блокировка для предотвращения двойного запуска
-    lockfile = Path('./.botrunning.lock')
-    
-    if lockfile.exists():
-        print("⚠️ Обнаружена старая блокировка. Попытка удаления...")
-        try:
-            lockfile.unlink()
-        except Exception as e:
-            print(f"⚠️ Warning: Could not delete old lock file: {e}")
-    
-    lockfile.write_text(str(os.getpid()))
-    print(f"✅ Lock file created: {lockfile}")
-    
-    print("\n🧹 Performing startup cleanup...")
-    cleanup_stale_requests()
-    restore_cache_from_files()
-    
-    print(f"✅ STUDENT_CACHE восстановлен: {len(STUDENT_CACHE)} записей")
-    
-    # Отладочная информация
-    print(f"📊 Расписание: {load_json(SCHEDULE_FILE)}")
-    print(f"📊 Подтвержденные занятия: {len(load_json(CONFIRMED_FILE))} записей")
-    print(f"📊 Ученики в students.json: {len(load_json(STUDENTS_FILE))} записей")
-    print(f"📊 Лог сообщений: {len(load_json(MESSAGE_LOG_FILE))} записей")
-    
-    SENT_REMINDERS.clear()
-    print("🧹 Очищены старые напоминания при запуске")
-    print("✅ Startup cleanup completed\n")
-    
-    sys.stdout.flush()
-    
-    try:
-        # Запускаем HTTP сервер как отдельную задачу
-        http_task = asyncio.create_task(run_http_server())
-        
-        # Запускаем бота в основной задаче
-        await start_bot()
-        
-        # Если start_bot завершился (что не должно случиться), ждем HTTP сервер
-        await http_task
-    
-    except KeyboardInterrupt:
-        print("⏸ Application interrupted by user")
-    except Exception as e:
-        print(f"❌ ERROR: Main thread error: {e}")
-        import traceback
-        traceback.print_exc()
-    finally:
-        if lockfile.exists():
-            try:
-                lockfile.unlink()
-            except:
-                pass
-        
-        print("✅ Bot stopped correctly")
-
-if __name__ == '__main__':
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        print("🛑 Bot stopped")
-    except Exception as e:
-        print(f"❌ ERROR: Main thread error: {e}")
-        import traceback
-        traceback.print_exc()
