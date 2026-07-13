@@ -32,11 +32,12 @@ if not TOKEN:
 
 TUTOR_ID = 1339816111
 
-# Исправлено: настраиваем сессию, чтобы HTTP-клиент не паниковал раньше времени
-session = AiohttpSession()
-session.api.config.timeout = 45 
+# --- НАЧАЛО ИСПРАВЛЕННОГО БЛОКА СЕТИ ---
+from aiohttp import ClientTimeout
 
-# Исправлено: передаем боту настроенную сессию
+timeout_settings = ClientTimeout(total=45, connect=10, sock_read=45)
+session = AiohttpSession(timeout=timeout_settings)
+
 bot = Bot(token=TOKEN, session=session)
 dp = Dispatcher(storage=MemoryStorage())
 SUBJECTS = ["Математика", "Физика", "Химия"]
