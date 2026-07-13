@@ -16,8 +16,11 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton
 from aiogram.filters import Command
 
+# Добавляем импорты для тонкой настройки сети
+from aiogram.client.session.aiohttp import AiohttpSession
+
 # ============================================================================
-# КОНФИГУРАЦИЯ
+# КОНФИГУРАЦИЯ И ИНИЦИАЛИЗАЦИЯ
 # ============================================================================
 
 PORT = int(os.getenv('PORT', 10000))
@@ -28,6 +31,14 @@ if not TOKEN:
     TOKEN = '8388119061:AAEfeIhBSsD_3WyVS3L_YRtdbvbQxyf5RCM'
 
 TUTOR_ID = 1339816111
+
+# Исправлено: настраиваем сессию, чтобы HTTP-клиент не паниковал раньше времени
+session = AiohttpSession()
+session.api.config.timeout = 45 
+
+# Исправлено: передаем боту настроенную сессию
+bot = Bot(token=TOKEN, session=session)
+dp = Dispatcher(storage=MemoryStorage())
 SUBJECTS = ["Математика", "Физика", "Химия"]
 
 DEFAULT_SCHEDULE = {
@@ -2522,8 +2533,7 @@ async def start_bot():
             dp.callback_query.register(student_reschedule_agree_handler, F.data.startswith("student_reschedule_agree_"))
             dp.callback_query.register(student_reschedule_decline_handler, F.data.startswith("student_reschedule_decline_"))
             
-            # ✅ ИСПРАВЛЕНО: Обработчик для отправки сообщения всем
-            dp.callback_query.register(broadcast_message_handler, F.data == "broadcast_message")
+dp.callback_query.register(broadcast_message_handler, F.data == "broadcast_message")
             
             print("✅ Handlers registered")
             print("⏳ Waiting for messages from Telegram...")
@@ -2538,6 +2548,7 @@ async def start_bot():
             asyncio.create_task(keep_alive_task())
             asyncio.create_task(delete_old_messages(bot))  # ✅ НОВОЕ: Запускаем удаление старых сообщений
             
+            # Исправлено:polling_timeout=10 решает проблему сброса сети со стороны Render
             await dp.start_polling(bot, skip_updates=True, handle_signals=False, polling_timeout=10)
         
         except Exception as e:
