@@ -15,7 +15,6 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton
 from aiogram.filters import Command
-from aiogram.client.default import DefaultBotProperties
 
 # ============================================================================
 # КОНФИГУРАЦИЯ И ИНИЦИАЛИЗАЦИЯ
@@ -30,16 +29,8 @@ if not TOKEN:
 
 TUTOR_ID = 1339816111
 
-# ✅ ИСПРАВЛЕНО: Правильные имена параметров для aiogram 3.11.0
-bot = Bot(
-    token=TOKEN,
-    default=DefaultBotProperties(
-        connect_timeout=45,   # ⚠️ ВНИМАНИЕ: Это имя параметра может отличаться!
-        read_timeout=45,
-        write_timeout=45,
-        pool_timeout=45
-    )
-)
+# ✅ САМЫЙ ПРОСТОЙ И НАДЕЖНЫЙ СПОСОБ для aiogram 3.11.0
+bot = Bot(token=TOKEN)
 
 storage = MemoryStorage()
 dp = Dispatcher(storage=storage)
