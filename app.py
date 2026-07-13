@@ -2533,7 +2533,8 @@ async def start_bot():
             dp.callback_query.register(student_reschedule_agree_handler, F.data.startswith("student_reschedule_agree_"))
             dp.callback_query.register(student_reschedule_decline_handler, F.data.startswith("student_reschedule_decline_"))
             
-dp.callback_query.register(broadcast_message_handler, F.data == "broadcast_message")
+            # ✅ Обработчик для отправки сообщения всем
+            dp.callback_query.register(broadcast_message_handler, F.data == "broadcast_message")
             
             print("✅ Handlers registered")
             print("⏳ Waiting for messages from Telegram...")
@@ -2546,9 +2547,9 @@ dp.callback_query.register(broadcast_message_handler, F.data == "broadcast_messa
             asyncio.create_task(send_daily_schedule(bot))
             asyncio.create_task(cleanup_task(bot))
             asyncio.create_task(keep_alive_task())
-            asyncio.create_task(delete_old_messages(bot))  # ✅ НОВОЕ: Запускаем удаление старых сообщений
+            asyncio.create_task(delete_old_messages(bot))  # ✅ Запускаем удаление старых сообщений
             
-            # Исправлено:polling_timeout=10 решает проблему сброса сети со стороны Render
+            # Исправлено: polling_timeout=10 решает проблему сброса сети со стороны Render
             await dp.start_polling(bot, skip_updates=True, handle_signals=False, polling_timeout=10)
         
         except Exception as e:
