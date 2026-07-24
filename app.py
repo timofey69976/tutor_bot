@@ -509,14 +509,13 @@ def tutor_cancel_confirm_keyboard(cancel_id: str):
     ])
 
 # ============================================================================
-# ИСПРАВЛЕННАЯ ФУНКЦИЯ ДЛЯ КЛАВИАТУРЫ СО СПИСКОМ ЗАНЯТИЙ
+# ИСПРАВЛЕННАЯ ФУНКЦИЯ ДЛЯ СПИСКА ЗАНЯТИЙ (безопасная)
 # ============================================================================
 def lessons_list_keyboard(lessons: Dict, action_type: str = "reschedule"):
     """Создает клавиатуру со списком занятий, безопасно обрабатывая отсутствие ключей"""
     kb = InlineKeyboardMarkup(inline_keyboard=[])
     
     for lesson_id, lesson in lessons.items():
-        # Безопасное получение данных
         student_name = lesson.get("student_name", "Неизвестный")
         date_str = lesson.get("date_str", "??.??.????")
         time_str = lesson.get("time", "??:??")
@@ -673,7 +672,7 @@ def get_available_times(day_name: str, schedule: Dict) -> List[str]:
         return []
     
     available = [time for time in all_times if not is_time_slot_booked(day_name, time)]
-    print(f"get_available_times: {day_name} -> {available}")
+    print(f"📊 get_available_times: {day_name} -> {available}")
     return available
 
 def create_request_id():
@@ -738,7 +737,6 @@ def get_tutor_lessons() -> Dict:
             week_end = week["Saturday"][0] + timedelta(days=1)
             
             if week_start <= lesson_date < week_end:
-                # Гарантируем date_str и time
                 if "date_str" not in lesson or "time" not in lesson:
                     lesson["date_str"] = lesson_date.strftime("%d.%m.%Y")
                     lesson["time"] = lesson_date.strftime("%H:%M")
@@ -1738,6 +1736,7 @@ async def broadcast_text_handler(message: types.Message, state: FSMContext, bot:
 async def reschedule_lesson_handler(callback: types.CallbackQuery, state: FSMContext):
     print("📞 reschedule_lesson_handler вызван")
     lessons = get_student_lessons(callback.from_user.id)
+    print(f"📞 lessons: {lessons}")
     
     if not lessons:
         await callback.message.edit_text(
@@ -1756,8 +1755,11 @@ async def reschedule_lesson_handler(callback: types.CallbackQuery, state: FSMCon
             "📅 Выберите занятие для переноса:",
             reply_markup=lessons_list_keyboard(lessons, "reschedule_pick")
         )
+        print("✅ Клавиатура для переноса отправлена")
     except Exception as e:
         print(f"❌ Ошибка в reschedule_lesson_handler: {e}")
+        import traceback
+        traceback.print_exc()
         await callback.answer("Произошла ошибка, попробуйте позже", show_alert=True)
         return
     
@@ -1766,14 +1768,17 @@ async def reschedule_lesson_handler(callback: types.CallbackQuery, state: FSMCon
 async def reschedule_pick_handler(callback: types.CallbackQuery, state: FSMContext):
     print(f"📞 reschedule_pick_handler вызван, data: {callback.data}")
     lesson_id = callback.data.replace("reschedule_pick_", "")
+    print(f"📞 lesson_id: {lesson_id}")
     
     confirmed = load_json(CONFIRMED_FILE)
+    print(f"📞 confirmed keys: {list(confirmed.keys())}")
     
     if lesson_id not in confirmed:
         await callback.answer("❌ Занятие не найдено", show_alert=True)
         return
     
     lesson = confirmed[lesson_id]
+    print(f"📞 lesson: {lesson}")
     
     # Гарантируем наличие date_str и time
     if "date_str" not in lesson or "time" not in lesson:
@@ -1783,7 +1788,8 @@ async def reschedule_pick_handler(callback: types.CallbackQuery, state: FSMConte
                 dt = dt.replace(tzinfo=MSK_TIMEZONE)
             lesson["date_str"] = dt.strftime("%d.%m.%Y")
             lesson["time"] = dt.strftime("%H:%M")
-        except:
+        except Exception as e:
+            print(f"⚠️ Ошибка генерации даты/времени: {e}")
             lesson["date_str"] = "??.??.????"
             lesson["time"] = "??:??"
     
@@ -1791,6 +1797,7 @@ async def reschedule_pick_handler(callback: types.CallbackQuery, state: FSMConte
     
     week = get_week_dates()
     schedule = load_json(SCHEDULE_FILE) or DEFAULT_SCHEDULE
+    print(f"📞 schedule: {schedule}")
     
     days_ru = {
         "Monday": "Понедельник",
@@ -1802,26 +1809,50 @@ async def reschedule_pick_handler(callback: types.CallbackQuery, state: FSMConte
     }
     
     kb = InlineKeyboardMarkup(inline_keyboard=[])
+    added_days = 0
     
     for day_name in ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"]:
         times = get_available_times(day_name, schedule)
+        print(f"📞 day {day_name} times: {times}")
         if times:
             date_obj, date_str = week[day_name]
             btn_text = f"{days_ru[day_name]}, {date_str}"
             kb.inline_keyboard.append([
                 InlineKeyboardButton(text=btn_text, callback_data=f"reschedule_day_{day_name}")
             ])
+            added_days += 1
+    
+    # Если нет доступных дней, сообщаем об этом и возвращаемся
+    if added_days == 0:
+        await callback.answer("❌ Нет доступных дней для переноса", show_alert=True)
+        await callback.message.edit_text(
+            "❌ Нет доступных дней для переноса. Попробуйте позже.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="⬅️ Вернуться в меню", callback_data="back_to_menu")]
+            ])
+        )
+        return
     
     kb.inline_keyboard.append([
         [InlineKeyboardButton(text="⬅️ Назад", callback_data="back_to_menu")]
     ])
     
-    await callback.message.edit_text("📅 Выберите новый день:", reply_markup=kb)
+    try:
+        await callback.message.edit_text("📅 Выберите новый день:", reply_markup=kb)
+        print("✅ Клавиатура с днями отправлена")
+    except Exception as e:
+        print(f"❌ Ошибка при редактировании сообщения: {e}")
+        import traceback
+        traceback.print_exc()
+        await callback.answer("Произошла ошибка, попробуйте позже", show_alert=True)
+        return
+    
     await state.set_state(RescheduleStates.waiting_for_new_time)
     await callback.answer()
 
 async def reschedule_day_handler(callback: types.CallbackQuery, state: FSMContext):
     day_name = callback.data.replace("reschedule_day_", "")
+    print(f"📞 reschedule_day_handler: day={day_name}")
     
     schedule = load_json(SCHEDULE_FILE) or DEFAULT_SCHEDULE
     
@@ -1846,6 +1877,7 @@ async def reschedule_confirm_handler(callback: types.CallbackQuery, state: FSMCo
     parts = callback.data.split("_")
     day_name = parts[2]
     time_str = "_".join(parts[3:])
+    print(f"📞 reschedule_confirm_handler: day={day_name}, time={time_str}")
     
     data = await state.get_data()
     
