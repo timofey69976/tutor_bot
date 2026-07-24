@@ -2369,7 +2369,7 @@ async def keep_alive_task():
             await asyncio.sleep(60)
 
 # ============================================================================
-# ОСНОВНОЙ БОТ
+# ОСНОВНОЙ БОТ (ИСПРАВЛЕННАЯ ВЕРСИЯ С DELETE_WEBHOOK)
 # ============================================================================
 
 async def start_bot():
@@ -2382,6 +2382,11 @@ async def start_bot():
         try:
             print("🤖 Initializing Telegram bot...")
             print("🔧 Creating bot...")
+            
+            # ✅ УДАЛЯЕМ ВЕБХУК ПЕРЕД ЗАПУСКОМ POLLING
+            print("📡 Удаляем вебхук...")
+            await bot.delete_webhook(drop_pending_updates=True)
+            print("✅ Вебхук удалён")
             
             print("📝 Registering handlers...")
             
