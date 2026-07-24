@@ -508,11 +508,19 @@ def tutor_cancel_confirm_keyboard(cancel_id: str):
         [InlineKeyboardButton(text="❌ Отклонить", callback_data=f"reject_cancel_{cancel_id}")]
     ])
 
+# ============================================================================
+# ИСПРАВЛЕННАЯ ФУНКЦИЯ ДЛЯ КЛАВИАТУРЫ СО СПИСКОМ ЗАНЯТИЙ
+# ============================================================================
 def lessons_list_keyboard(lessons: Dict, action_type: str = "reschedule"):
+    """Создает клавиатуру со списком занятий, безопасно обрабатывая отсутствие ключей"""
     kb = InlineKeyboardMarkup(inline_keyboard=[])
     
     for lesson_id, lesson in lessons.items():
-        btn_text = f"{lesson['student_name']} - {lesson['date_str']} {lesson['time']}"
+        # Безопасное получение данных
+        student_name = lesson.get("student_name", "Неизвестный")
+        date_str = lesson.get("date_str", "??.??.????")
+        time_str = lesson.get("time", "??:??")
+        btn_text = f"{student_name} - {date_str} {time_str}"
         callback = f"{action_type}_{lesson_id}"
         kb.inline_keyboard.append([
             InlineKeyboardButton(text=btn_text, callback_data=callback)
@@ -689,9 +697,29 @@ def get_lesson_datetime(day_name: str, time_str: str) -> Optional[datetime]:
     
     return dt
 
+# ============================================================================
+# ИСПРАВЛЕННАЯ ФУНКЦИЯ get_student_lessons (гарантирует date_str и time)
+# ============================================================================
 def get_student_lessons(student_id: int) -> Dict:
+    """Получить подтвержденные занятия ученика с гарантированными ключами date_str и time"""
     confirmed = load_json(CONFIRMED_FILE)
-    return {lid: l for lid, l in confirmed.items() if l.get("student_id") == student_id}
+    result = {}
+    for lid, lesson in confirmed.items():
+        if lesson.get("student_id") == student_id:
+            # Если нет date_str или time, генерируем из lesson_datetime
+            if "date_str" not in lesson or "time" not in lesson:
+                try:
+                    dt = datetime.fromisoformat(lesson.get("lesson_datetime", ""))
+                    if dt.tzinfo is None:
+                        dt = dt.replace(tzinfo=MSK_TIMEZONE)
+                    lesson["date_str"] = dt.strftime("%d.%m.%Y")
+                    lesson["time"] = dt.strftime("%H:%M")
+                except Exception as e:
+                    print(f"⚠️ Ошибка генерации даты/времени для занятия {lid}: {e}")
+                    lesson["date_str"] = "??.??.????"
+                    lesson["time"] = "??:??"
+            result[lid] = lesson
+    return result
 
 def get_tutor_lessons() -> Dict:
     confirmed = load_json(CONFIRMED_FILE)
@@ -710,6 +738,10 @@ def get_tutor_lessons() -> Dict:
             week_end = week["Saturday"][0] + timedelta(days=1)
             
             if week_start <= lesson_date < week_end:
+                # Гарантируем date_str и time
+                if "date_str" not in lesson or "time" not in lesson:
+                    lesson["date_str"] = lesson_date.strftime("%d.%m.%Y")
+                    lesson["time"] = lesson_date.strftime("%H:%M")
                 tutor_lessons[lesson_id] = lesson
         
         except Exception as e:
@@ -1054,7 +1086,7 @@ async def time_select_handler(callback: types.CallbackQuery, state: FSMContext):
     await callback.answer()
 
 # ============================================================================
-# ОСТАЛЬНЫЕ ОБРАБОТЧИКИ (ПОЛНЫЙ НАБОР)
+# ОСТАЛЬНЫЕ ОБРАБОТЧИКИ (включая перенос и отмену)
 # ============================================================================
 
 async def confirm_time_handler(callback: types.CallbackQuery, state: FSMContext, bot: Bot):
@@ -1700,10 +1732,11 @@ async def broadcast_text_handler(message: types.Message, state: FSMContext, bot:
     await state.clear()
 
 # ============================================================================
-# ОСТАЛЬНЫЕ ОБРАБОТЧИКИ (ПЕРЕНОС И ОТМЕНА)
+# ИСПРАВЛЕННЫЕ ОБРАБОТЧИКИ ДЛЯ ПЕРЕНОСА ЗАНЯТИЙ
 # ============================================================================
 
 async def reschedule_lesson_handler(callback: types.CallbackQuery, state: FSMContext):
+    print("📞 reschedule_lesson_handler вызван")
     lessons = get_student_lessons(callback.from_user.id)
     
     if not lessons:
@@ -1713,17 +1746,25 @@ async def reschedule_lesson_handler(callback: types.CallbackQuery, state: FSMCon
                 [InlineKeyboardButton(text="⬅️ Вернуться в меню", callback_data="back_to_menu")]
             ])
         )
-        
         await callback.answer()
         return
     
     await state.set_state(RescheduleStates.choosing_lesson)
     
-    await callback.message.edit_text("📅 Выберите занятие для переноса:", reply_markup=lessons_list_keyboard(lessons, "reschedule_pick"))
+    try:
+        await callback.message.edit_text(
+            "📅 Выберите занятие для переноса:",
+            reply_markup=lessons_list_keyboard(lessons, "reschedule_pick")
+        )
+    except Exception as e:
+        print(f"❌ Ошибка в reschedule_lesson_handler: {e}")
+        await callback.answer("Произошла ошибка, попробуйте позже", show_alert=True)
+        return
     
     await callback.answer()
 
 async def reschedule_pick_handler(callback: types.CallbackQuery, state: FSMContext):
+    print(f"📞 reschedule_pick_handler вызван, data: {callback.data}")
     lesson_id = callback.data.replace("reschedule_pick_", "")
     
     confirmed = load_json(CONFIRMED_FILE)
@@ -1734,13 +1775,22 @@ async def reschedule_pick_handler(callback: types.CallbackQuery, state: FSMConte
     
     lesson = confirmed[lesson_id]
     
-    await state.update_data(reschedule_lesson_id=lesson_id, reschedule_subject=lesson["subject"])
+    # Гарантируем наличие date_str и time
+    if "date_str" not in lesson or "time" not in lesson:
+        try:
+            dt = datetime.fromisoformat(lesson.get("lesson_datetime", ""))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=MSK_TIMEZONE)
+            lesson["date_str"] = dt.strftime("%d.%m.%Y")
+            lesson["time"] = dt.strftime("%H:%M")
+        except:
+            lesson["date_str"] = "??.??.????"
+            lesson["time"] = "??:??"
+    
+    await state.update_data(reschedule_lesson_id=lesson_id, reschedule_subject=lesson.get("subject", "Неизвестный предмет"))
     
     week = get_week_dates()
-    schedule = load_json(SCHEDULE_FILE)
-    
-    if not schedule:
-        schedule = DEFAULT_SCHEDULE
+    schedule = load_json(SCHEDULE_FILE) or DEFAULT_SCHEDULE
     
     days_ru = {
         "Monday": "Понедельник",
@@ -1755,7 +1805,6 @@ async def reschedule_pick_handler(callback: types.CallbackQuery, state: FSMConte
     
     for day_name in ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"]:
         times = get_available_times(day_name, schedule)
-        
         if times:
             date_obj, date_str = week[day_name]
             btn_text = f"{days_ru[day_name]}, {date_str}"
@@ -1768,18 +1817,13 @@ async def reschedule_pick_handler(callback: types.CallbackQuery, state: FSMConte
     ])
     
     await callback.message.edit_text("📅 Выберите новый день:", reply_markup=kb)
-    
     await state.set_state(RescheduleStates.waiting_for_new_time)
-    
     await callback.answer()
 
 async def reschedule_day_handler(callback: types.CallbackQuery, state: FSMContext):
     day_name = callback.data.replace("reschedule_day_", "")
     
-    schedule = load_json(SCHEDULE_FILE)
-    
-    if not schedule:
-        schedule = DEFAULT_SCHEDULE
+    schedule = load_json(SCHEDULE_FILE) or DEFAULT_SCHEDULE
     
     times = get_available_times(day_name, schedule)
     
@@ -1796,7 +1840,6 @@ async def reschedule_day_handler(callback: types.CallbackQuery, state: FSMContex
     ])
     
     await callback.message.edit_text("⏰ Выберите новое время:", reply_markup=kb)
-    
     await callback.answer()
 
 async def reschedule_confirm_handler(callback: types.CallbackQuery, state: FSMContext, bot: Bot):
